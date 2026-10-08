@@ -1,0 +1,17 @@
+.gradle/
+build/
+.idea/*
+!.idea/runConfigurations/
+!.idea/runConfigurations/*.xml
+*.iml
+hs_err_pid*.log
+replay_pid*.log
+*.log
+
+.mcp-servers/
+
+bin/
+
+lib/
+
+mcp-config/

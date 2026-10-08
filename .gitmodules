@@ -1,0 +1,6 @@
+[submodule "RLHD"]
+	path = RLHD
+	url = https://github.com/RuffledPlume/RLHD/tree/DevPlugin-Base
+[submodule "Tools/rlawt"]
+	path = Tools/rlawt
+	url = https://github.com/aHooder/rlawt

@@ -1,0 +1,4 @@
+rootProject.name = 'RLHD-Dev'
+
+// RLHD is a git submodule and is left untouched. Its own settings.gradle is ignored when it is included here.
+include 'RLHD'
