@@ -1,13 +1,17 @@
 package rs117.hd.renderer.zone;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiFunction;
 import javax.annotation.Nullable;
 import rs117.hd.renderer.zone.RecreatedSceneRenderer.FloorTile;
+import rs117.hd.scene.ProceduralGenerator;
 import rs117.hd.scene.materials.Material;
 import rs117.hd.scene.tile_overrides.TileOverride;
 import rs117.hd.scene.water_types.WaterType;
@@ -19,7 +23,8 @@ import static rs117.hd.utils.MathUtils.*;
 /**
  * Developer tools: blends a recreated floor's tiles into each other, the way 117 HD's ProceduralGenerator blends the real
  * ground. Corners shared by neighbouring tiles get one smoothed normal, colour and ground material, picked from all the
- * tiles meeting there, and corners where overlays meet underlays are marked for the shader to blend between them.
+ * tiles meeting there, and corners where overlays meet underlays are marked for the shader to blend between them. Water
+ * gets sunk deeper the further it is from the shore, and its corners meeting land are marked for the shoreline's foam.
  * <p>
  * Corners are matched by where they are in the recreated floor, including their height, so tiles on different levels
  * don't blend into each other.
@@ -38,10 +43,23 @@ class RecreatedFloorBlending {
 	private final Set<Long> overlayCorners = new HashSet<>();
 	private final Set<Long> underlayCorners = new HashSet<>();
 	private final Set<Long> highPriorityColors = new HashSet<>();
+	// The water type of a tile's triangle with its override & texture, like ProceduralGenerator.seasonalWaterType
+	private final BiFunction<TileOverride, Integer, WaterType> waterTypes;
+	private final Set<Long> waterCorners = new HashSet<>();
+	private final Set<Long> landCorners = new HashSet<>();
+	private final Map<Long, Integer> underwaterDepths = new HashMap<>();
 
-	RecreatedFloorBlending(List<FloorTile> floor, Map<FloorTile, TileOverride[]> overrides, Set<FloorTile> overlayMainTiles) {
+	RecreatedFloorBlending(
+		List<FloorTile> floor,
+		Map<FloorTile, TileOverride[]> overrides,
+		Set<FloorTile> overlayMainTiles,
+		BiFunction<TileOverride, Integer, WaterType> waterTypes
+	) {
 		this.overrides.putAll(overrides);
 		this.overlayMainTiles = overlayMainTiles;
+		this.waterTypes = waterTypes;
+		// Sink the water first, since normals follow the sunken ground
+		addWater(floor);
 		for (var tile : floor)
 			addNormals(tile);
 		for (var tile : floor)
@@ -72,6 +90,31 @@ class RecreatedFloorBlending {
 	 */
 	boolean isMainOverlay(FloorTile tile) {
 		return overlayMainTiles.contains(tile);
+	}
+
+	/**
+	 * The water type of a tile's triangle, or none if it isn't water
+	 */
+	WaterType getWaterType(FloorTile tile, int triangle) {
+		TileOverride[] tileOverrides = overrides.get(tile);
+		int type = tile.overrideTypes == null ? OVERRIDE_MAIN : tile.overrideTypes[triangle];
+		var override = tileOverrides == null ? TileOverride.NONE : tileOverrides[type];
+		int texture = tile.textures == null ? -1 : tile.textures[triangle];
+		return waterTypes.apply(override, texture);
+	}
+
+	/**
+	 * How far below the water's surface the ground at the corner is sunk
+	 */
+	int getUnderwaterDepth(long corner) {
+		return underwaterDepths.getOrDefault(corner, 0);
+	}
+
+	/**
+	 * Whether water meets land at the corner, where the water shader draws foam
+	 */
+	boolean isShore(long corner) {
+		return waterCorners.contains(corner) && landCorners.contains(corner);
 	}
 
 	int getColor(long corner, int color) {
@@ -110,10 +153,121 @@ class RecreatedFloorBlending {
 	 * Where a corner of a tile's triangle is in the recreated floor, with its height
 	 */
 	static long cornerKey(FloorTile tile, int vertex) {
-		long x = tile.tileExX * LOCAL_TILE_SIZE + tile.vertices[vertex * 3];
-		long y = tile.vertices[vertex * 3 + 1];
-		long z = tile.tileExY * LOCAL_TILE_SIZE + tile.vertices[vertex * 3 + 2];
+		return cornerKey(
+			tile.tileExX * LOCAL_TILE_SIZE + tile.vertices[vertex * 3],
+			tile.vertices[vertex * 3 + 1],
+			tile.tileExY * LOCAL_TILE_SIZE + tile.vertices[vertex * 3 + 2]
+		);
+	}
+
+	private static long cornerKey(long x, long y, long z) {
 		return (x & 0xFFFFF) << 40 | (z & 0xFFFFF) << 20 | y & 0xFFFFF;
+	}
+
+	private static long cornerX(long key) {
+		return key >> 40 & 0xFFFFF;
+	}
+
+	private static long cornerZ(long key) {
+		return key >> 20 & 0xFFFFF;
+	}
+
+	private static long cornerY(long key) {
+		// Heights are signed
+		return key << 44 >> 44;
+	}
+
+	private static boolean isOnTileCorner(FloorTile tile, int vertex) {
+		return tile.vertices[vertex * 3] % LOCAL_TILE_SIZE == 0 && tile.vertices[vertex * 3 + 2] % LOCAL_TILE_SIZE == 0;
+	}
+
+	/**
+	 * Like ProceduralGenerator's UnderwaterTerrainGenerator: mark which corners are water & land, then sink water corners
+	 * a level deeper for each ring of water around them, and interpolate the depth of corners inside shaped tiles
+	 */
+	private void addWater(List<FloorTile> floor) {
+		// Depth levels of the corners on the tile grid, where 0 is land and 1 the water at the shore
+		Map<Long, Integer> levels = new HashMap<>();
+		Set<Long> landGrid = new HashSet<>();
+		List<FloorTile> waterTiles = new ArrayList<>();
+		for (var tile : floor) {
+			boolean hasWater = false;
+			TileOverride[] tileOverrides = overrides.get(tile);
+			for (int corner = 0; corner < tile.colors.length; corner++) {
+				int triangle = corner / 3;
+				long key = cornerKey(tile, corner);
+				if (getWaterType(tile, triangle) == WaterType.NONE) {
+					int type = tile.overrideTypes == null ? OVERRIDE_MAIN : tile.overrideTypes[triangle];
+					boolean forced = tileOverrides != null && tileOverrides[type].forced;
+					if (tile.colors[corner] != HDUtils.HIDDEN_HSL || forced)
+						landCorners.add(key);
+					if (isOnTileCorner(tile, corner))
+						landGrid.add(key);
+				} else {
+					hasWater = true;
+					waterCorners.add(key);
+					if (isOnTileCorner(tile, corner))
+						levels.putIfAbsent(key, 1);
+				}
+			}
+			if (hasWater)
+				waterTiles.add(tile);
+		}
+		if (waterTiles.isEmpty())
+			return;
+		levels.keySet().removeAll(landGrid);
+
+		// Sink water further from the shore, a level at a time, like ProceduralGenerator does across the scene
+		List<Long> water = new ArrayList<>(levels.keySet());
+		water.sort(Comparator.<Long>comparingLong(RecreatedFloorBlending::cornerX).thenComparingLong(RecreatedFloorBlending::cornerZ));
+		for (int pass = 0; pass < ProceduralGenerator.DEPTH_LEVEL_SLOPE.length - 1; pass++) {
+			for (long key : water) {
+				int level = levels.get(key);
+				long x = cornerX(key), y = cornerY(key), z = cornerZ(key);
+				if (levels.getOrDefault(cornerKey(x - LOCAL_TILE_SIZE, y, z), 0) < level ||
+					levels.getOrDefault(cornerKey(x, y, z - LOCAL_TILE_SIZE), 0) < level ||
+					levels.getOrDefault(cornerKey(x + LOCAL_TILE_SIZE, y, z), 0) < level ||
+					levels.getOrDefault(cornerKey(x, y, z + LOCAL_TILE_SIZE), 0) < level)
+					continue;
+				levels.put(key, level + 1);
+			}
+		}
+
+		for (var tile : waterTiles) {
+			// The depths at the tile's corners, for corners inside it to be interpolated from
+			int[] cornerDepths = new int[4];
+			for (int corner = 0; corner < tile.colors.length; corner++) {
+				if (!isOnTileCorner(tile, corner))
+					continue;
+				int depth = getDepth(levels.getOrDefault(cornerKey(tile, corner), 0));
+				int x = tile.vertices[corner * 3] / LOCAL_TILE_SIZE;
+				int z = tile.vertices[corner * 3 + 2] / LOCAL_TILE_SIZE;
+				cornerDepths[z * 2 + x] = depth;
+				if (depth > 0)
+					underwaterDepths.put(cornerKey(tile, corner), depth);
+			}
+			for (int corner = 0; corner < tile.colors.length; corner++) {
+				long key = cornerKey(tile, corner);
+				if (isOnTileCorner(tile, corner) || landCorners.contains(key))
+					continue;
+				float lerpX = tile.vertices[corner * 3] / (float) LOCAL_TILE_SIZE;
+				float lerpZ = tile.vertices[corner * 3 + 2] / (float) LOCAL_TILE_SIZE;
+				float south = mix(cornerDepths[0], cornerDepths[1], lerpX);
+				float north = mix(cornerDepths[2], cornerDepths[3], lerpX);
+				int depth = (int) mix(south, north, lerpZ);
+				if (depth > 0)
+					underwaterDepths.put(key, depth);
+			}
+		}
+	}
+
+	/**
+	 * The same as ProceduralGenerator's getHeightOffset
+	 */
+	private static int getDepth(int level) {
+		if (level == 0)
+			return 0;
+		return (int) (ProceduralGenerator.DEPTH_LEVEL_SLOPE[level - 1] * .55f);
 	}
 
 	static boolean isPainted(FloorTile tile) {
@@ -139,6 +293,9 @@ class RecreatedFloorBlending {
 			System.arraycopy(v, corner * 3, a, 0, 3);
 			System.arraycopy(v, corner * 3 + 3, b, 0, 3);
 			System.arraycopy(v, corner * 3 + 6, c, 0, 3);
+			a[1] += getUnderwaterDepth(cornerKey(tile, corner));
+			b[1] += getUnderwaterDepth(cornerKey(tile, corner + 1));
+			c[1] += getUnderwaterDepth(cornerKey(tile, corner + 2));
 			HDUtils.calculateSurfaceNormals(normal, a, b, c);
 			for (int k = 0; k < 3; k++) {
 				float[] sum = normals.computeIfAbsent(cornerKey(tile, corner + k), key -> new float[3]);

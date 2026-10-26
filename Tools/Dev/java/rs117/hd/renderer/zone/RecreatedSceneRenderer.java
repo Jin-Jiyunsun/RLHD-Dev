@@ -81,6 +81,8 @@ public class RecreatedSceneRenderer {
 	private static final Field FAST_SHADOW_PROGRAM = field(ZoneRenderer.class, "fastShadowProgram");
 	private static final Field DETAILED_SHADOW_PROGRAM = field(ZoneRenderer.class, "detailedShadowProgram");
 	private static final Field SHOULD_DRAW_ROOF_SHADOWS = field(ZoneRenderer.class, "shouldDrawRoofShadows");
+	private static final Field SCENE_PROGRAM = field(ZoneRenderer.class, "sceneProgram");
+	private static final Field WATER_PROGRAM = field(ZoneRenderer.class, "waterProgram");
 	private static final short[] UP_NORMAL = { 0, -1, 0 };
 
 	@Inject
@@ -306,10 +308,18 @@ public class RecreatedSceneRenderer {
 			if (!override.hide)
 				estimateModelSize(zone, object.model, override);
 		}
+		int waterTriangles = 0;
 		for (var tile : content.floor) {
 			zone.sizeO += tile.colors.length / 3;
 			zone.sizeF += tile.colors.length / 3;
+			for (int triangle = 0; triangle < tile.colors.length / 3; triangle++)
+				if (floorBlending.getWaterType(tile, triangle) != WaterType.NONE)
+					waterTriangles++;
 		}
+		// The water's surface is drawn on top of the sunken ground under it
+		zone.sizeO += waterTriangles;
+		zone.sizeF += waterTriangles;
+		zone.hasWater = waterTriangles > 0;
 		if (zone.sizeO == 0)
 			return null;
 
@@ -401,6 +411,8 @@ public class RecreatedSceneRenderer {
 
 			uploadFloor(uploader, ctx, content.floor, basex, basez, vb, fb);
 			zone.levelOffsets[Zone.LEVEL_TERRAIN] = vb.position();
+			if (zone.hasWater)
+				uploadWaterSurface(uploader, ctx, content.floor, basex, basez, vb, fb);
 			zone.levelOffsets[Zone.LEVEL_WATER_SURFACE] = vb.position();
 			zone.levelOffsets[Zone.LEVEL_GAP_FILLER] = vb.position();
 		}
@@ -430,8 +442,8 @@ public class RecreatedSceneRenderer {
 	/**
 	 * Draw a recreated scene capture's floor tiles from their triangles, like SceneUploader.uploadTilePaint & uploadTileModel
 	 * draw real tiles. Their tile overrides are picked from where the tiles really are, with their replacements picked by
-	 * the captured tile's colour, so edits to tile_overrides.json show up when the floor is uploaded again. Water isn't
-	 * recreated.
+	 * the captured tile's colour, so edits to tile_overrides.json show up when the floor is uploaded again. Water is drawn
+	 * as the ground under it, sunk deeper the further it is from the shore, with its surface uploaded separately.
 	 */
 	private void uploadFloor(
 		SceneUploader uploader,
@@ -459,8 +471,10 @@ public class RecreatedSceneRenderer {
 		int[] colors = new int[3];
 		long[] corners = new long[3];
 		short[][] normals = new short[3][3];
+		boolean[] overlayEdges = new boolean[3];
+		int[] terrainData = new int[3];
+		int[] heightOffsets = new int[3];
 		for (var tile : floor) {
-			int terrainData = HDUtils.packTerrainData(true, 0, WaterType.NONE, tile.plane);
 			int baseX = (tile.tileExX - ctx.sceneOffset) * LOCAL_TILE_SIZE - basex;
 			int baseZ = (tile.tileExY - ctx.sceneOffset) * LOCAL_TILE_SIZE - basez;
 			int[] v = tile.vertices;
@@ -472,14 +486,34 @@ public class RecreatedSceneRenderer {
 				int textureId = tile.textures == null ? -1 : tile.textures[t];
 				int type = tile.overrideTypes == null ? 0 : tile.overrideTypes[t];
 				var override = overrides == null ? NONE : overrides[type];
-				if (proceduralGenerator.seasonalWaterType(override, textureId) != WaterType.NONE)
-					override = NONE;
 				boolean isOverlay = painted ? blending.isMainOverlay(tile) : type == 2;
 				System.arraycopy(tile.colors, i, colors, 0, 3);
 				materials[0] = materials[1] = materials[2] = Material.NONE;
 				for (int k = 0; k < 3; k++) {
 					corners[k] = RecreatedFloorBlending.cornerKey(tile, t * 3 + k);
 					blending.getNormal(corners[k], normals[k], UP_NORMAL);
+				}
+				int a = i * 3;
+
+				var waterType = blending.getWaterType(tile, t);
+				if (waterType != WaterType.NONE) {
+					// The ground under the water, like SceneUploader draws it
+					for (int k = 0; k < 3; k++) {
+						int depth = blending.getUnderwaterDepth(corners[k]);
+						colors[k] = HDUtils.UNDERWATER_HSL;
+						if (plugin.configGroundTextures && wp != null) {
+							materials[k] = GroundMaterial.UNDERWATER_GENERIC.getRandomMaterial(
+								wp[0] + (v[a + k * 3] >> LOCAL_COORD_BITS),
+								wp[1] + (v[a + k * 3 + 2] >> LOCAL_COORD_BITS),
+								wp[2]
+							);
+						}
+						overlayEdges[k] = false;
+						terrainData[k] = HDUtils.packTerrainData(true, max(1, depth), waterType, tile.plane);
+						heightOffsets[k] = depth - override.heightOffset;
+					}
+					putTriangle(vb, tb, tile, a, baseX, baseZ, colors, materials, overlayEdges, terrainData, heightOffsets, 0, 1, normals);
+					continue;
 				}
 
 				if (textureId != -1) {
@@ -517,7 +551,6 @@ public class RecreatedSceneRenderer {
 					for (int k = 0; k < 3; k++)
 						colors[k] = blending.getColor(corners[k], colors[k]);
 
-				int a = i * 3;
 				if (plugin.configGroundTextures) {
 					if (blendTextures) {
 						for (int k = 0; k < 3; k++)
@@ -533,37 +566,116 @@ public class RecreatedSceneRenderer {
 					}
 				}
 
-				// Textures line up with where the tile really is, the same way they do on shaped tiles
-				float uvcos = -uvScale, uvsin = 0;
-				if (uvOrientation % 2048 != 0) {
-					float rad = -uvOrientation * JAU_TO_RAD;
-					uvcos = cos(rad) * -uvScale;
-					uvsin = sin(rad) * -uvScale;
-				}
-				float uvx = wp == null ? 0 : fract(wp[0] * uvcos - wp[1] * uvsin);
-				float uvy = wp == null ? 0 : fract(wp[0] * uvsin + wp[1] * uvcos);
-
-				int faceIdx = tb.putFace(
-					colors[0], colors[1], colors[2],
-					materials[0].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[0])),
-					materials[1].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[1])),
-					materials[2].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[2])),
-					terrainData, terrainData, terrainData
-				);
 				for (int k = 0; k < 3; k++) {
-					int vx = v[a + k * 3], vy = v[a + k * 3 + 1] - override.heightOffset, vz = v[a + k * 3 + 2];
-					float dx = (float) vx / LOCAL_TILE_SIZE;
-					float dz = (float) vz / LOCAL_TILE_SIZE;
-					vb.putStaticVertex(
-						baseX + vx, vy, baseZ + vz,
-						uvx + dx * uvcos - dz * uvsin, uvy + dx * uvsin + dz * uvcos, 0,
-						normals[k][0], normals[k][1], normals[k][2],
-						faceIdx, false
-					);
+					overlayEdges[k] = blending.isOverlayEdge(corners[k]);
+					terrainData[k] = HDUtils.packTerrainData(true, 0, WaterType.NONE, tile.plane);
+					heightOffsets[k] = -override.heightOffset;
 				}
+				putTriangle(vb, tb, tile, a, baseX, baseZ, colors, materials, overlayEdges, terrainData, heightOffsets, uvOrientation, uvScale, normals);
 			}
 		}
 		writeCache.release();
+	}
+
+	/**
+	 * Draw a recreated floor's water surface, like SceneUploader draws real water's, with foam where it meets land
+	 */
+	private void uploadWaterSurface(
+		SceneUploader uploader,
+		ZoneSceneContext ctx,
+		List<FloorTile> floor,
+		int basex,
+		int basez,
+		GpuIntBuffer vertexBuffer,
+		GpuIntBuffer textureBuffer
+	) {
+		var blending = floorBlending;
+		assert blending != null && uploader.writeCache != null;
+		var writeCache = uploader.writeCache;
+		writeCache.setOutputBuffers(vertexBuffer, vertexBuffer, textureBuffer);
+		final var vb = writeCache.getVertexBuffer();
+		final var tb = writeCache.getTextureBuffer();
+
+		Material[] materials = { Material.NONE, Material.NONE, Material.NONE };
+		boolean[] overlayEdges = new boolean[3];
+		int[] colors = new int[3];
+		int[] terrainData = new int[3];
+		int[] heightOffsets = new int[3];
+		short[][] normals = { UP_NORMAL, UP_NORMAL, UP_NORMAL };
+		for (var tile : floor) {
+			int baseX = (tile.tileExX - ctx.sceneOffset) * LOCAL_TILE_SIZE - basex;
+			int baseZ = (tile.tileExY - ctx.sceneOffset) * LOCAL_TILE_SIZE - basez;
+			TileOverride[] overrides = blending.getOverrides(tile);
+			for (int t = 0, i = 0; i < tile.colors.length; t++, i += 3) {
+				var waterType = blending.getWaterType(tile, t);
+				if (waterType == WaterType.NONE)
+					continue;
+				int type = tile.overrideTypes == null ? 0 : tile.overrideTypes[t];
+				var override = overrides == null ? NONE : overrides[type];
+				// The water shader draws foam where the colour is 0
+				for (int k = 0; k < 3; k++) {
+					colors[k] = blending.isShore(RecreatedFloorBlending.cornerKey(tile, t * 3 + k)) ? 0 : 127;
+					terrainData[k] = HDUtils.packTerrainData(true, 0, waterType, tile.plane);
+					heightOffsets[k] = -override.heightOffset;
+				}
+				// Bias depth a bit if it's flush with underwater geometry
+				if (colors[0] == 0 && colors[1] == 0 && colors[2] == 0)
+					colors[0] = colors[1] = colors[2] = 1 << 16;
+				putTriangle(vb, tb, tile, i * 3, baseX, baseZ, colors, materials, overlayEdges, terrainData, heightOffsets, 0, 1, normals);
+			}
+		}
+		writeCache.release();
+	}
+
+	/**
+	 * Write one of a floor tile's triangles, with its textures lined up with where the tile really is, the same way they
+	 * are on real shaped tiles
+	 */
+	private static void putTriangle(
+		VertexWriteCache vb,
+		VertexWriteCache tb,
+		FloorTile tile,
+		int vertexOffset,
+		int baseX,
+		int baseZ,
+		int[] colors,
+		Material[] materials,
+		boolean[] overlayEdges,
+		int[] terrainData,
+		int[] heightOffsets,
+		int uvOrientation,
+		float uvScale,
+		short[][] normals
+	) {
+		int[] v = tile.vertices;
+		int[] wp = tile.worldPos;
+		float uvcos = -uvScale, uvsin = 0;
+		if (uvOrientation % 2048 != 0) {
+			float rad = -uvOrientation * JAU_TO_RAD;
+			uvcos = cos(rad) * -uvScale;
+			uvsin = sin(rad) * -uvScale;
+		}
+		float uvx = wp == null ? 0 : fract(wp[0] * uvcos - wp[1] * uvsin);
+		float uvy = wp == null ? 0 : fract(wp[0] * uvsin + wp[1] * uvcos);
+
+		int faceIdx = tb.putFace(
+			colors[0], colors[1], colors[2],
+			materials[0].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, overlayEdges[0]),
+			materials[1].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, overlayEdges[1]),
+			materials[2].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, overlayEdges[2]),
+			terrainData[0], terrainData[1], terrainData[2]
+		);
+		for (int k = 0; k < 3; k++) {
+			int vx = v[vertexOffset + k * 3], vy = v[vertexOffset + k * 3 + 1] + heightOffsets[k], vz = v[vertexOffset + k * 3 + 2];
+			float dx = (float) vx / LOCAL_TILE_SIZE;
+			float dz = (float) vz / LOCAL_TILE_SIZE;
+			vb.putStaticVertex(
+				baseX + vx, vy, baseZ + vz,
+				uvx + dx * uvcos - dz * uvsin, uvy + dx * uvsin + dz * uvcos, 0,
+				normals[k][0], normals[k][1], normals[k][2],
+				faceIdx, false
+			);
+		}
 	}
 
 	/**
@@ -580,7 +692,8 @@ public class RecreatedSceneRenderer {
 				overlayMainTiles.add(tile);
 			overrides.put(tile, tileOverrides);
 		}
-		return new RecreatedFloorBlending(floor, overrides, overlayMainTiles);
+		var proceduralGenerator = plugin.getInjector().getInstance(ProceduralGenerator.class);
+		return new RecreatedFloorBlending(floor, overrides, overlayMainTiles, proceduralGenerator::seasonalWaterType);
 	}
 
 	/**
@@ -825,12 +938,22 @@ public class RecreatedSceneRenderer {
 	public void afterDrawZoneAlpha(Scene scene, int level, int zx, int zz) throws IllegalAccessException {
 		Zone zone = getDrawableZone(scene, zx, zz);
 		var root = sceneManager.getRoot();
-		if (zone == null || root == null || zone.alphaModels.isEmpty())
+		if (zone == null || root == null)
 			return;
 		var renderer = (ZoneRenderer) plugin.renderer;
 		int offset = root.sceneContext.sceneOffset >> 3;
 		var cmd = renderer.sceneCmd;
 		cmd.Enable(GL_BLEND);
+
+		// The water's surface, drawn with the water shader like ZoneRenderer.drawZoneAlpha draws real water
+		if (zone.hasWater && zone.inSceneFrustum && root.minLevel == 0 && level == 0) {
+			cmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) WATER_PROGRAM.get(renderer));
+			zone.renderOpaqueLevel(cmd, Zone.LEVEL_WATER_SURFACE);
+			cmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) SCENE_PROGRAM.get(renderer));
+		}
+
+		if (zone.alphaModels.isEmpty())
+			return;
 
 		if (castsShadows(renderer) && zone.inShadowFrustum) {
 			var program = plugin.configShadowMode == ShadowMode.DETAILED ? DETAILED_SHADOW_PROGRAM : FAST_SHADOW_PROGRAM;
