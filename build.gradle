@@ -4,11 +4,17 @@ project(':RLHD') {
 
 		rlhd.dependencies.add('testImplementation', rlhd.sourceSets.developer.output)
 
+		// Optionally load 117 HD's resources, such as lights.json, from another checkout, so JSON edits can be made there.
+		// Set rlhdResourcePath in your own ~/.gradle/gradle.properties.
+		def resourcePath = rootProject.findProperty('rlhdResourcePath')
+
 		// Launch through the developer repo's own copy of HdPluginTest, so RLHD's launcher doesn't need to know about these tools
 		rlhd.tasks.named('run', JavaExec) {
 			classpath = rlhd.sourceSets.developer.runtimeClasspath
 			mainClass = 'rs117.hd.DeveloperPluginTest'
 			workingDir = rlhd.projectDir
+			if (resourcePath)
+				environment 'resourcePath', resourcePath
 		}
 
 		rlhd.tasks.named('developerJar') {
@@ -23,7 +29,7 @@ project(':RLHD') {
 			args '--developer-mode', '--debug', '--disable-telemetry'
 			systemProperty 'runelite.rlawtpath', rootProject.file('Tools/rlawt/build/librlawt.so').absolutePath
 			environment 'LD_PRELOAD', '/usr/lib/librenderdoc.so'
-			environment 'resourcePath', 'RLHD/src/main/resources'
+			environment 'resourcePath', resourcePath ?: 'RLHD/src/main/resources'
 		}
 	}
 }
