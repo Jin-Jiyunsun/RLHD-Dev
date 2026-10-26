@@ -1,7 +1,7 @@
 [submodule "RLHD"]
 	path = RLHD
-	url = https://github.com/117HD/RLHD
-	branch = DevPlugin-Base
+	url = https://github.com/117HD/RLHD.git
+	branch = master
 [submodule "Tools/rlawt"]
 	path = Tools/rlawt
 	url = https://github.com/aHooder/rlawt

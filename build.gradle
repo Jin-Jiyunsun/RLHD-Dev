@@ -1,14 +1,16 @@
+import org.gradle.internal.os.OperatingSystem
+
 project(':RLHD') {
 	afterEvaluate { Project rlhd ->
 		rlhd.apply from: rootProject.file('Tools/Dev/build.gradle')
 
 		rlhd.dependencies.add('testImplementation', rlhd.sourceSets.developer.output)
 
-		// Launch through the developer repo's own copy of HdPluginTest, so RLHD's launcher doesn't need to know about these tools
 		rlhd.tasks.named('run', JavaExec) {
 			classpath = rlhd.sourceSets.developer.runtimeClasspath
 			mainClass = 'rs117.hd.DeveloperPluginTest'
 			workingDir = rlhd.projectDir
+			systemProperty 'rlhd.model-exports-path', rootProject.file('model-exports').absolutePath
 		}
 
 		rlhd.tasks.named('developerJar') {
@@ -19,10 +21,56 @@ project(':RLHD') {
 			classpath = rlhd.sourceSets.developer.runtimeClasspath
 			mainClass = 'rs117.hd.DeveloperPluginTest'
 			workingDir = rlhd.projectDir
+			systemProperty 'rlhd.model-exports-path', rootProject.file('model-exports').absolutePath
 			jvmArgs '-ea', '-Xmx768M', '--add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED'
 			args '--developer-mode', '--debug', '--disable-telemetry'
 			systemProperty 'runelite.rlawtpath', rootProject.file('Tools/rlawt/build/librlawt.so').absolutePath
 			environment 'LD_PRELOAD', '/usr/lib/librenderdoc.so'
+		}
+	}
+}
+
+def lwjglVersion = '3.3.2'
+
+// Used to pick appropriate natives for test builds
+switch (org.gradle.internal.os.OperatingSystem.current()) {
+	case org.gradle.internal.os.OperatingSystem.LINUX:
+		def osArch = System.getProperty("os.arch")
+		project.ext.lwjglNatives = osArch.startsWith("arm") || osArch.startsWith("aarch64")
+				? "natives-linux-${osArch.contains("64") || osArch.startsWith("armv8") ? "arm64" : "arm32"}"
+				: "natives-linux"
+		break
+	case org.gradle.internal.os.OperatingSystem.MAC_OS:
+		project.ext.lwjglNatives = System.getProperty("os.arch").startsWith("aarch64") ? "natives-macos-arm64" : "natives-macos"
+		break
+	case org.gradle.internal.os.OperatingSystem.WINDOWS:
+		def osArch = System.getProperty("os.arch")
+		project.ext.lwjglNatives = osArch.contains("64")
+				? "natives-windows${osArch.startsWith("aarch64") ? "-arm64" : ""}"
+				: "natives-windows-x86"
+		break
+}
+
+project(':RLHD') {
+	afterEvaluate { Project rlhd ->
+		def lwjglNativesVal = rootProject.ext.has('lwjglNatives') ? rootProject.ext.lwjglNatives : ''
+		if (rlhd.configurations.findByName('developerImplementation')) {
+			rlhd.dependencies.add('developerImplementation', rlhd.dependencies.platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+			rlhd.dependencies.add('developerImplementation', "org.lwjgl:lwjgl")
+			rlhd.dependencies.add('developerImplementation', "org.lwjgl:lwjgl-assimp")
+			if (lwjglNativesVal) {
+				rlhd.dependencies.add('developerRuntimeOnly', "org.lwjgl:lwjgl::$lwjglNativesVal")
+				rlhd.dependencies.add('developerRuntimeOnly', "org.lwjgl:lwjgl-assimp::$lwjglNativesVal")
+			}
+		}
+		if (rlhd.configurations.findByName('testRuntimeClasspath')) {
+			rlhd.dependencies.add('testRuntimeOnly', rlhd.dependencies.platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+			rlhd.dependencies.add('testRuntimeOnly', "org.lwjgl:lwjgl")
+			rlhd.dependencies.add('testRuntimeOnly', "org.lwjgl:lwjgl-assimp")
+			if (lwjglNativesVal) {
+				rlhd.dependencies.add('testRuntimeOnly', "org.lwjgl:lwjgl::$lwjglNativesVal")
+				rlhd.dependencies.add('testRuntimeOnly', "org.lwjgl:lwjgl-assimp::$lwjglNativesVal")
+			}
 		}
 	}
 }

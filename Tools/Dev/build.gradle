@@ -22,6 +22,19 @@ sourceSets.developer.compileClasspath = sourceSets.main.output + configurations.
 sourceSets.developer.runtimeClasspath = sourceSets.developer.output + sourceSets.main.output + configurations.developerRuntimeClasspath
 sourceSets.test.runtimeClasspath += sourceSets.developer.output
 
+def lwjglVersion = '3.3.2'
+dependencies {
+	add('developerImplementation', platform("org.lwjgl:lwjgl-bom:$lwjglVersion"))
+	add('developerImplementation', "org.lwjgl:lwjgl")
+	add('developerImplementation', "org.lwjgl:lwjgl-assimp")
+
+	def lwjglNatives = rootProject.ext.has('lwjglNatives') ? rootProject.ext.lwjglNatives : project.findProperty('lwjglNatives')
+	if (lwjglNatives) {
+		add('developerRuntimeOnly', "org.lwjgl:lwjgl::$lwjglNatives")
+		add('developerRuntimeOnly', "org.lwjgl:lwjgl-assimp::$lwjglNatives")
+	}
+}
+
 tasks.named('processDeveloperResources') {
 	filesMatching('runelite-plugin.properties') {
 		expand(version: project.version)

@@ -30,7 +30,7 @@ public class DeveloperPluginTest
 		Props.set("rlhd.resource-path", "src/main/resources");
 		ClassLoader.getSystemClassLoader().setDefaultAssertionStatus(true);
 		useLatestPluginHub();
-		ExternalPluginManager.loadBuiltin(HdPlugin.class, DeveloperPlugin.class);
+		ExternalPluginManager.loadBuiltin(DeveloperPlugin.class, HdPlugin.class);
 		RuneLite.main(args);
 	}
 
