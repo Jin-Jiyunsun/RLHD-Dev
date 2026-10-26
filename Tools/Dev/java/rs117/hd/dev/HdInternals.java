@@ -26,6 +26,9 @@ import rs117.hd.utils.ModelHash;
 import rs117.hd.utils.ResourcePath;
 import rs117.hd.utils.collections.Int2ObjectHashMap;
 
+import static rs117.hd.dev.Reflection.field;
+import static rs117.hd.dev.Reflection.get;
+
 /**
  * Reads and changes 117 HD's private state which the developer tools need, so 117 HD doesn't have to expose it.
  * Everything here except {@link #readGamevals} must be called on the client thread, where 117 HD changes this state.
@@ -151,24 +154,6 @@ public class HdInternals {
 				new TypeToken<Map<String, Map<String, Integer>>>() {}.getType()
 			);
 			return gamevals.getOrDefault(category, Collections.emptyMap());
-		}
-	}
-
-	private static Field field(Class<?> type, String name) {
-		try {
-			Field field = type.getDeclaredField(name);
-			field.setAccessible(true);
-			return field;
-		} catch (NoSuchFieldException ex) {
-			throw new IllegalStateException("117 HD no longer has " + type.getSimpleName() + "." + name, ex);
-		}
-	}
-
-	private static Object get(Field field, Object owner) {
-		try {
-			return field.get(owner);
-		} catch (IllegalAccessException ex) {
-			throw new IllegalStateException(ex);
 		}
 	}
 }

@@ -108,12 +108,18 @@ public class SceneTools {
 	private SceneRecreation sceneRecreation;
 	private boolean onlyDrawingTestObjects;
 
-	// The environments.json environment a recreated scene is lit by, and the area it had before being made to cover everything
+	// The environments.json environment a recreated scene is lit by, and the area & instant transition it had before being
+	// made to cover everything and switch to and from instantly
 	@Nullable
 	private String overrideEnvironmentName;
 	@Nullable
 	private Environment overriddenEnvironment;
 	private Area overriddenEnvironmentArea;
+	private boolean overriddenEnvironmentInstant;
+	// The environment just stopped overriding, which keeps switching instantly until 117 HD has switched away from it
+	@Nullable
+	private Environment leavingEnvironment;
+	private boolean leavingEnvironmentInstant;
 
 	// Stop drawing everything but test objects, the same way the Blindfold plugin hides things. It only affects drawing,
 	// leaving clickboxes, menus and everything else alone.
@@ -206,8 +212,20 @@ public class SceneTools {
 	public void shutDown() {
 		eventBus.unregister(this);
 		// Stop hiding the scene first, since the render callbacks would otherwise keep hiding it
-		setOnlyDrawingTestObjects(false);
+		stopHiding();
 		removeRecreatedScene();
+		// Nothing will check when 117 HD switches away from it once stopped, so give it back its own transition now
+		finishLeavingEnvironment();
+	}
+
+	/**
+	 * Show everything again. Must be called on the client thread.
+	 */
+	void stopHiding() {
+		setOnlyDrawingTestObjects(false);
+		var panel = spawnerTools.get().getPanel();
+		if (panel != null)
+			SwingUtilities.invokeLater(() -> panel.showOnlyDrawingTestObjects(false));
 	}
 
 	public boolean hasRecreatedScene() {
@@ -448,6 +466,7 @@ public class SceneTools {
 				pending.part.isDiagonal(),
 				// Kept rotated like the client's, since static scenery isn't rotated again when drawn
 				modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, 0, true),
+				0,
 				false
 			);
 			if (model == null) {
@@ -491,6 +510,8 @@ public class SceneTools {
 			pending.part.isDiagonal(),
 			// Moving the model back by the nudge lets pieces nudged by different amounts still meet without cracks
 			modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, nudgeBack, false),
+			// Turned by the RuneLiteObject when drawn
+			quarterTurns,
 			false
 		);
 		if (model == null) {
@@ -735,17 +756,28 @@ public class SceneTools {
 		var ctx = plugin.getSceneContext();
 		if (ctx == null)
 			return;
+		if (leavingEnvironment != null && environmentManager.getTargetEnvironment() != leavingEnvironment)
+			finishLeavingEnvironment();
+
 		var environment = overrideEnvironmentName == null ? null : hdInternals.findEnvironment(overrideEnvironmentName);
 		if (environment != overriddenEnvironment) {
 			restoreEnvironment();
 			if (environment != null) {
+				boolean instant = environment.instantTransition;
+				if (environment == leavingEnvironment) {
+					instant = leavingEnvironmentInstant;
+					leavingEnvironment = null;
+				}
 				overriddenEnvironment = environment;
 				overriddenEnvironmentArea = environment.area;
+				overriddenEnvironmentInstant = instant;
 				// Cover everywhere, keeping the area's name, which can also be the environment's
 				environment.area = new Area(
 					environment.area.name,
 					Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE
 				);
+				// Switch to the recreated scene's lighting at once rather than fading into it
+				environment.instantTransition = true;
 			}
 		}
 		// 117 HD picks the first of the scene's environments which contains the camera
@@ -759,10 +791,21 @@ public class SceneTools {
 		if (overriddenEnvironment == null)
 			return;
 		overriddenEnvironment.area = overriddenEnvironmentArea;
+		// 117 HD only switches away on its next frame, so keep the transition instant until it has
+		finishLeavingEnvironment();
+		leavingEnvironment = overriddenEnvironment;
+		leavingEnvironmentInstant = overriddenEnvironmentInstant;
 		overriddenEnvironment = null;
 		var ctx = plugin.getSceneContext();
 		if (ctx != null)
 			environmentManager.loadSceneEnvironments(ctx);
+	}
+
+	private void finishLeavingEnvironment() {
+		if (leavingEnvironment == null)
+			return;
+		leavingEnvironment.instantTransition = leavingEnvironmentInstant;
+		leavingEnvironment = null;
 	}
 
 	public void removeRecreatedSceneAndNotify() {

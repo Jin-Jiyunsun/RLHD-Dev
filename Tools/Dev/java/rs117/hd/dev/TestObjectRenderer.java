@@ -6,6 +6,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -30,8 +31,6 @@ import rs117.hd.utils.ModelHash;
 @Slf4j
 @Singleton
 public class TestObjectRenderer {
-	private static final Method GET_HASH = method(TileObject.class, "getHash");
-
 	@Inject
 	private Client client;
 
@@ -198,31 +197,13 @@ public class TestObjectRenderer {
 			return tileObject;
 		// Keep the scene position & plane bits, and replace the type & ID, which are what 117 HD reads
 		long hash = tileObject.getHash() & 0xFFFF | (long) ModelHash.TYPE_OBJECT << 16 | (long) objectId << 20;
-		Class<?> type = tileObject instanceof GameObject ? GameObject.class : TileObject.class;
-		return (TileObject) Proxy.newProxyInstance(
-			type.getClassLoader(),
-			new Class<?>[] { type },
-			(proxy, method, args) -> {
-				if (method.getName().equals(GET_HASH.getName()) && method.getParameterCount() == 0)
-					return hash;
-				try {
-					return method.invoke(tileObject, args);
-				} catch (InvocationTargetException ex) {
-					throw ex.getCause();
-				}
-			}
-		);
+		Function<String, Object> answers = name -> name.equals("getHash") ? hash : null;
+		if (tileObject instanceof GameObject)
+			return Reflection.wrap(GameObject.class, (GameObject) tileObject, answers);
+		return Reflection.wrap(TileObject.class, tileObject, answers);
 	}
 
 	private static long packPosition(int localX, int localZ) {
 		return (long) localX << 32 | localZ & 0xFFFFFFFFL;
-	}
-
-	private static Method method(Class<?> type, String name) {
-		try {
-			return type.getMethod(name);
-		} catch (NoSuchMethodException ex) {
-			throw new IllegalStateException(ex);
-		}
 	}
 }

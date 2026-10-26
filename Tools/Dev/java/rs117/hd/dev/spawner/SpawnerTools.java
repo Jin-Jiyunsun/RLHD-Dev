@@ -25,8 +25,10 @@ import net.runelite.api.events.*;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.PluginChanged;
 import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
+import rs117.hd.HdPlugin;
 import rs117.hd.dev.HdInternals;
 import rs117.hd.dev.TestObjectLights;
 import rs117.hd.dev.TestObjectRenderer;
@@ -189,6 +191,20 @@ public class SpawnerTools {
 			sceneTools.shutDown();
 			testObjectLights.shutDown();
 			testObjectRenderer.shutDown();
+		});
+	}
+
+	@Subscribe
+	public void onPluginChanged(PluginChanged event) {
+		// 117 HD stopping takes its renderer with it, so remove everything, including the render callbacks hiding the scene,
+		// which would otherwise keep hiding it without 117 HD
+		if (!(event.getPlugin() instanceof HdPlugin) || event.isLoaded())
+			return;
+		clientThread.invoke(() -> {
+			stopTestSpotanim();
+			stopTestProjectile();
+			clearTestObjects();
+			sceneTools.stopHiding();
 		});
 	}
 
@@ -784,7 +800,7 @@ public class SpawnerTools {
 			return null;
 		}
 
-		Model model = buildTestObjectModel(def, def.models, false, false, null, reportErrors);
+		Model model = buildTestObjectModel(def, def.models, false, false, null, 0, reportErrors);
 		if (model == null)
 			return null;
 
@@ -808,6 +824,8 @@ public class SpawnerTools {
 	 * Build an object's model from some of its model IDs, applying the definition's model changes like the client does.
 	 * Mirroring, the 45 degree turn of diagonal wall decorations and finishing the model in place of scaling & offsetting
 	 * it are for objects recreated from a scene capture, which the client builds from more than the centrepiece model.
+	 * The client lights a model after turning it, so a model turned by quarter turns when drawn is lit from the opposite
+	 * direction, to end up lit the same way.
 	 */
 	@Nullable
 	Model buildTestObjectModel(
@@ -816,6 +834,7 @@ public class SpawnerTools {
 		boolean mirror,
 		boolean diagonal,
 		@Nullable UnaryOperator<ModelData> finish,
+		int drawnQuarterTurns,
 		boolean reportErrors
 	) {
 		ModelData[] models = new ModelData[modelIds.length];
@@ -856,12 +875,28 @@ public class SpawnerTools {
 				modelData.translate(def.offset[0], def.offset[1], def.offset[2]);
 		}
 
+		// Turn the light the other way, the same way ModelData.rotateY90Ccw and the others turn vertices
+		int lightX = ModelData.DEFAULT_X, lightZ = ModelData.DEFAULT_Z;
+		switch (-drawnQuarterTurns & 3) {
+			case 1:
+				lightX = ModelData.DEFAULT_Z;
+				lightZ = -ModelData.DEFAULT_X;
+				break;
+			case 2:
+				lightX = -ModelData.DEFAULT_X;
+				lightZ = -ModelData.DEFAULT_Z;
+				break;
+			case 3:
+				lightX = -ModelData.DEFAULT_Z;
+				lightZ = ModelData.DEFAULT_X;
+				break;
+		}
 		return modelData.light(
 			ModelData.DEFAULT_AMBIENT + def.ambient,
 			ModelData.DEFAULT_CONTRAST + def.contrast,
-			ModelData.DEFAULT_X,
+			lightX,
 			ModelData.DEFAULT_Y,
-			ModelData.DEFAULT_Z
+			lightZ
 		);
 	}
 

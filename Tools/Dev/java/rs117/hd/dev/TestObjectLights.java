@@ -5,6 +5,9 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import net.runelite.api.*;
@@ -70,89 +73,90 @@ public class TestObjectLights {
 		if (plugin.getSceneContext() == null)
 			return;
 
-		var testObjects = testObjectRenderer.getTestObjects();
 		var lights = hdInternals.getLights();
-		Set<RuneLiteObject> lit = Collections.newSetFromMap(new IdentityHashMap<>());
-		Set<Light> current = Collections.newSetFromMap(new IdentityHashMap<>());
-		for (var light : lights) {
-			var object = testObjectLights.get(light);
-			if (object == null)
-				continue;
-			current.add(light);
-			if (light.markedForRemoval)
-				continue;
-			if (!object.isActive() || !testObjects.containsKey(object)) {
-				// Fade out with the object, like real objects' lights
-				light.markedForRemoval = true;
-				continue;
-			}
-			light.orientation = getLightOrientation(object);
-			lit.add(object);
-		}
-		// Forget lights 117 HD has dropped, whether faded out or cleared by a reload
-		testObjectLights.keySet().retainAll(current);
-
-		for (var entry : testObjects.entrySet()) {
-			var object = entry.getKey();
-			if (!object.isActive() || lit.contains(object))
-				continue;
-			// Most objects have no lights
-			var defs = hdInternals.getObjectLights(entry.getValue());
-			if (defs.isEmpty())
-				continue;
-
-			var location = object.getLocation();
-			for (LightDefinition def : defs) {
-				Light light = new Light(def);
-				light.tileObjectId = entry.getValue();
+		var testObjects = testObjectRenderer.getTestObjects();
+		updateLights(
+			lights,
+			testObjectLights,
+			testObjects.keySet(),
+			object -> object.isActive() && testObjects.containsKey(object),
+			object -> hdInternals.getObjectLights(testObjects.get(object)),
+			(light, object) -> {
+				var location = object.getLocation();
+				light.tileObjectId = testObjects.get(object);
 				light.plane = object.getLevel();
 				light.orientation = getLightOrientation(object);
 				light.origin[0] = location.getX();
 				// The object's own height, which it keeps instead of following the ground
-				light.origin[1] = object.getZ() - def.height - 1;
+				light.origin[1] = object.getZ() - light.def.height - 1;
 				light.origin[2] = location.getY();
-				lights.add(light);
-				testObjectLights.put(light, object);
 			}
-		}
+		);
 
-		updateStaticObjectLights(lights);
-	}
-
-	private void updateStaticObjectLights(List<Light> lights) {
-		Set<StaticObject> lit = Collections.newSetFromMap(new IdentityHashMap<>());
+		var staticObjects = this.staticObjects;
 		Set<StaticObject> current = Collections.newSetFromMap(new IdentityHashMap<>());
 		current.addAll(staticObjects);
+		updateLights(
+			lights,
+			staticObjectLights,
+			staticObjects,
+			object -> !object.removed && current.contains(object),
+			object -> object.type == ModelHash.TYPE_NPC ? hdInternals.getNpcLights(object.id) : hdInternals.getObjectLights(object.id),
+			(light, object) -> {
+				light.tileObjectId = object.id;
+				light.plane = object.plane;
+				light.orientation = object.lightOrientation;
+				light.origin[0] = object.x;
+				light.origin[1] = object.height - light.def.height - 1;
+				light.origin[2] = object.y;
+			}
+		);
+	}
+
+	/**
+	 * Keep each object lit while it exists, and fade its lights out once it's gone, like real objects' lights
+	 *
+	 * @param lights      117 HD's lights
+	 * @param objectLights the lights given to objects of this kind, which may no longer be in 117 HD's list if it has
+	 *                    reloaded its lights since
+	 * @param place       positions and turns a light the same way as its object
+	 */
+	private static <T> void updateLights(
+		List<Light> lights,
+		Map<Light, T> objectLights,
+		Iterable<T> objects,
+		Predicate<T> exists,
+		Function<T, List<LightDefinition>> definitions,
+		BiConsumer<Light, T> place
+	) {
+		Set<T> lit = Collections.newSetFromMap(new IdentityHashMap<>());
 		Set<Light> inList = Collections.newSetFromMap(new IdentityHashMap<>());
 		for (var light : lights) {
-			var object = staticObjectLights.get(light);
+			var object = objectLights.get(light);
 			if (object == null)
 				continue;
 			inList.add(light);
 			if (light.markedForRemoval)
 				continue;
-			if (object.removed || !current.contains(object)) {
+			if (!exists.test(object)) {
 				light.markedForRemoval = true;
 				continue;
 			}
+			place.accept(light, object);
 			lit.add(object);
 		}
-		staticObjectLights.keySet().retainAll(inList);
+		// Forget lights 117 HD has dropped, whether faded out or cleared by a reload
+		objectLights.keySet().retainAll(inList);
 
-		for (var object : staticObjects) {
-			if (object.removed || lit.contains(object))
+		for (var object : objects) {
+			if (lit.contains(object) || !exists.test(object))
 				continue;
-			var defs = object.type == ModelHash.TYPE_NPC ? hdInternals.getNpcLights(object.id) : hdInternals.getObjectLights(object.id);
-			for (LightDefinition def : defs) {
+			// Most objects have no lights
+			for (LightDefinition def : definitions.apply(object)) {
 				Light light = new Light(def);
-				light.tileObjectId = object.id;
-				light.plane = object.plane;
-				light.orientation = object.lightOrientation;
-				light.origin[0] = object.x;
-				light.origin[1] = object.height - def.height - 1;
-				light.origin[2] = object.y;
+				place.accept(light, object);
 				lights.add(light);
-				staticObjectLights.put(light, object);
+				objectLights.put(light, object);
 			}
 		}
 	}

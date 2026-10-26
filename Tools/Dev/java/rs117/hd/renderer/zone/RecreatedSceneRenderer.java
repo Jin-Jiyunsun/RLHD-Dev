@@ -5,7 +5,9 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
@@ -17,6 +19,7 @@ import net.runelite.api.*;
 import net.runelite.api.hooks.*;
 import rs117.hd.HdPlugin;
 import rs117.hd.config.ShadowMode;
+import rs117.hd.dev.Reflection;
 import rs117.hd.renderer.SkyRenderer;
 import rs117.hd.scene.MaterialManager;
 import rs117.hd.scene.ModelOverrideManager;
@@ -40,6 +43,8 @@ import rs117.hd.utils.buffer.GpuIntBuffer;
 import static net.runelite.api.Constants.*;
 import static net.runelite.api.Perspective.*;
 import static org.lwjgl.opengl.GL33C.*;
+import static rs117.hd.dev.Reflection.field;
+import static rs117.hd.dev.Reflection.method;
 import static rs117.hd.renderer.zone.SceneManager.NUM_ZONES;
 import static rs117.hd.scene.tile_overrides.TileOverride.NONE;
 import static rs117.hd.utils.MathUtils.*;
@@ -76,6 +81,7 @@ public class RecreatedSceneRenderer {
 	private static final Field FAST_SHADOW_PROGRAM = field(ZoneRenderer.class, "fastShadowProgram");
 	private static final Field DETAILED_SHADOW_PROGRAM = field(ZoneRenderer.class, "detailedShadowProgram");
 	private static final Field SHOULD_DRAW_ROOF_SHADOWS = field(ZoneRenderer.class, "shouldDrawRoofShadows");
+	private static final short[] UP_NORMAL = { 0, -1, 0 };
 
 	@Inject
 	private Client client;
@@ -94,9 +100,6 @@ public class RecreatedSceneRenderer {
 
 	@Inject
 	private TileOverrideManager tileOverrideManager;
-
-	// Fetched from 117 HD's own injector, since 117 HD doesn't create it up front for the developer plugin to be given
-	private ProceduralGenerator proceduralGenerator;
 
 	/**
 	 * A recreated object or NPC, uploaded like static scenery. Its model is already rotated the way the client rotates
@@ -157,6 +160,14 @@ public class RecreatedSceneRenderer {
 	// The renderer the zones were uploaded for, since they're gone if 117 HD has started a new one since
 	@Nullable
 	private Object uploadedFor;
+	// The ground data 117 HD had generated when the zones were uploaded. It generates it again when it reloads its scene, such
+	// as when tile or model overrides or ground settings change, which keeps the scene context, so look out for new data.
+	@Nullable
+	private Object uploadedForSceneData;
+	private List<FloorTile> floor = List.of();
+	// Worked out from the whole floor before uploading it, and again whenever everything is uploaded again
+	@Nullable
+	private RecreatedFloorBlending floorBlending;
 
 	/**
 	 * Replace what's recreated. Must be called on the client thread.
@@ -171,7 +182,8 @@ public class RecreatedSceneRenderer {
 		}
 		for (var tile : floor)
 			contents.computeIfAbsent(packZone(tile.tileExX >> 3, tile.tileExY >> 3), k -> new ZoneContent()).floor.add(tile);
-		pendingZones.addAll(contents.keySet());
+		this.floor = floor;
+		uploadAll();
 	}
 
 	public boolean hasContent() {
@@ -202,6 +214,15 @@ public class RecreatedSceneRenderer {
 		}
 		contents.clear();
 		pendingZones.clear();
+		floor = List.of();
+		floorBlending = null;
+		uploadedForSceneData = null;
+	}
+
+	private void uploadAll() {
+		pendingZones.clear();
+		pendingZones.addAll(contents.keySet());
+		floorBlending = null;
 	}
 
 	/**
@@ -222,8 +243,7 @@ public class RecreatedSceneRenderer {
 				}
 			}
 			uploadedFor = renderer;
-			pendingZones.clear();
-			pendingZones.addAll(contents.keySet());
+			uploadAll();
 		}
 		if (!(renderer instanceof ZoneRenderer))
 			return;
@@ -231,6 +251,14 @@ public class RecreatedSceneRenderer {
 		var root = sceneManager.getRoot();
 		if (root == null || root.sceneContext == null || root.isLoading)
 			return;
+
+		// Pick up changes to tile & model overrides and ground settings, which 117 HD reloads its scene for
+		if (root.sceneContext.vertexTerrainColor != uploadedForSceneData) {
+			uploadedForSceneData = root.sceneContext.vertexTerrainColor;
+			uploadAll();
+		}
+		if (floorBlending == null)
+			floorBlending = blendFloor();
 
 		long deadline = System.nanoTime() + UPLOAD_NANOS_PER_TICK;
 		while (!pendingZones.isEmpty() && System.nanoTime() < deadline) {
@@ -271,9 +299,7 @@ public class RecreatedSceneRenderer {
 		int[] worldPos = new int[3];
 
 		// Work out how much room the zone needs, like SceneUploader.estimateZoneSize
-		var injector = plugin.getInjector();
-		proceduralGenerator = injector.getInstance(ProceduralGenerator.class);
-		Zone zone = injector.getInstance(Zone.class);
+		Zone zone = plugin.getInjector().getInstance(Zone.class);
 		for (var object : content.objects) {
 			ctx.localToWorld(object.x, object.y, object.plane, worldPos);
 			var override = modelOverrideManager.getOverride(ModelHash.packUuid(object.type, object.id), worldPos);
@@ -324,6 +350,10 @@ public class RecreatedSceneRenderer {
 			BASE_Z.setInt(uploader, basez);
 			RID.setInt(uploader, 0);
 			int[] uploaderWorldPos = (int[]) WORLD_POS.get(uploader);
+			Map<Integer, List<FloorTile>> floorByTile = new HashMap<>();
+			for (var tile : content.floor)
+				floorByTile.computeIfAbsent(packTile(tile.plane, tile.tileExX, tile.tileExY), k -> new ArrayList<>()).add(tile);
+			TileOverride[] realOverrides = new TileOverride[3];
 
 			for (int level = 0; level <= 3; level++) {
 				RENDERABLE_PLANE.setInt(uploader, level);
@@ -335,20 +365,35 @@ public class RecreatedSceneRenderer {
 					Tile tile = tiles[level][tileExX][tileExY];
 					if (tile == null)
 						continue;
+					int tileZ = tile.getRenderLevel();
 					ctx.localToWorld(object.x, object.y, level, uploaderWorldPos);
+
+					// Objects which inherit the tile's colour take it from the recreated floor, rather than the real tile it
+					// hides, so for the upload, the real tile's overrides are swapped for the recreated floor's too
+					var floor = findFloorTile(floorByTile.get(packTile(tileZ, tileExX, tileExY)), object.height);
+					var floorOverrides = floor == null || floorBlending == null ? null : floorBlending.getOverrides(floor);
+					boolean swapOverrides = floorOverrides != null;
+					if (swapOverrides) {
+						ctx.getTileOverrides(tileZ, tileExX, tileExY, realOverrides);
+						ctx.setTileOverride(tileZ, tileExX, tileExY, floorOverrides);
+					}
 					try {
 						UPLOAD_ZONE_RENDERABLE.invoke(
 							uploader,
-							ctx, zone, tile, object.model, ModelHash.packUuid(object.type, object.id),
+							ctx, zone, floor == null ? tile : standInTile(tile, floor), object.model,
+							ModelHash.packUuid(object.type, object.id),
 							object.preOrientation, object.orientation,
 							object.x, object.height, object.y,
 							-1, -1, -1, -1,
 							object.id,
-							tileExX, tileExY, tile.getRenderLevel(),
+							tileExX, tileExY, tileZ,
 							vb, ab, fb
 						);
 					} catch (InvocationTargetException ex) {
 						log.warn("Unable to upload recreated object {}", object.id, ex.getCause());
+					} finally {
+						if (swapOverrides)
+							ctx.setTileOverride(tileZ, tileExX, tileExY, realOverrides);
 					}
 				}
 				zone.levelOffsets[level] = vb.position();
@@ -383,10 +428,10 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * Draw a recreated scene capture's floor tiles from their triangles. Their tile overrides are picked here, from where the
-	 * tiles really are, so edits to tile_overrides.json show up whenever the floor is uploaded again. Overrides apply like
-	 * they do on real tiles, with their replacements picked by the captured tile's colour, except for blending and water,
-	 * which need the real scene.
+	 * Draw a recreated scene capture's floor tiles from their triangles, like SceneUploader.uploadTilePaint & uploadTileModel
+	 * draw real tiles. Their tile overrides are picked from where the tiles really are, with their replacements picked by
+	 * the captured tile's colour, so edits to tile_overrides.json show up when the floor is uploaded again. Water isn't
+	 * recreated.
 	 */
 	private void uploadFloor(
 		SceneUploader uploader,
@@ -399,6 +444,10 @@ public class RecreatedSceneRenderer {
 	) {
 		if (floor.isEmpty())
 			return;
+		var blending = floorBlending;
+		assert blending != null;
+		// From 117 HD's own injector, since 117 HD doesn't create it up front for the developer plugin to be given
+		var proceduralGenerator = plugin.getInjector().getInstance(ProceduralGenerator.class);
 		if (uploader.writeCache == null)
 			uploader.writeCache = new VertexWriteCache.Collection();
 		var writeCache = uploader.writeCache;
@@ -406,30 +455,32 @@ public class RecreatedSceneRenderer {
 		final var vb = writeCache.getVertexBuffer();
 		final var tb = writeCache.getTextureBuffer();
 
-		TileOverride[] overrides = new TileOverride[3];
 		Material[] materials = new Material[3];
 		int[] colors = new int[3];
+		long[] corners = new long[3];
+		short[][] normals = new short[3][3];
 		for (var tile : floor) {
 			int terrainData = HDUtils.packTerrainData(true, 0, WaterType.NONE, tile.plane);
 			int baseX = (tile.tileExX - ctx.sceneOffset) * LOCAL_TILE_SIZE - basex;
 			int baseZ = (tile.tileExY - ctx.sceneOffset) * LOCAL_TILE_SIZE - basez;
 			int[] v = tile.vertices;
 			int[] wp = tile.worldPos;
-			if (wp != null) {
-				int overlay = TileOverride.OVERLAY_FLAG | tile.overlayId;
-				var vars = getTileColorVariables(tile);
-				overrides[0] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay, tile.underlayId), vars);
-				overrides[1] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, tile.underlayId), vars);
-				overrides[2] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay), vars);
-			}
+			TileOverride[] overrides = blending.getOverrides(tile);
+			boolean painted = RecreatedFloorBlending.isPainted(tile);
 
 			for (int t = 0, i = 0; i < tile.colors.length; t++, i += 3) {
 				int textureId = tile.textures == null ? -1 : tile.textures[t];
-				var override = wp == null || tile.overrideTypes == null ? NONE : overrides[tile.overrideTypes[t]];
+				int type = tile.overrideTypes == null ? 0 : tile.overrideTypes[t];
+				var override = overrides == null ? NONE : overrides[type];
 				if (proceduralGenerator.seasonalWaterType(override, textureId) != WaterType.NONE)
 					override = NONE;
+				boolean isOverlay = painted ? blending.isMainOverlay(tile) : type == 2;
 				System.arraycopy(tile.colors, i, colors, 0, 3);
 				materials[0] = materials[1] = materials[2] = Material.NONE;
+				for (int k = 0; k < 3; k++) {
+					corners[k] = RecreatedFloorBlending.cornerKey(tile, t * 3 + k);
+					blending.getNormal(corners[k], normals[k], UP_NORMAL);
+				}
 
 				if (textureId != -1) {
 					var material = materialManager.fromVanillaTexture(textureId);
@@ -439,6 +490,14 @@ public class RecreatedSceneRenderer {
 					materials[0] = materials[1] = materials[2] = material;
 				}
 
+				boolean keepsOwnColor = RecreatedFloorBlending.useDefaultColor(tile, t, override);
+				boolean allowBlending =
+					plugin.configGroundBlending &&
+					textureId == -1 &&
+					!(painted ? keepsOwnColor : isOverlay && keepsOwnColor);
+				boolean blendColors = plugin.configGroundBlendingColors && allowBlending;
+				boolean blendTextures = plugin.configGroundBlendingTextures && allowBlending;
+
 				int uvOrientation = 0;
 				float uvScale = 1;
 				GroundMaterial groundMaterial = null;
@@ -446,21 +505,31 @@ public class RecreatedSceneRenderer {
 					groundMaterial = override.groundMaterial;
 					uvOrientation = override.uvOrientation;
 					uvScale = override.uvScale;
-					for (int k = 0; k < 3; k++)
-						colors[k] = override.modifyColor(colors[k]);
+					if (!blendColors)
+						for (int k = 0; k < 3; k++)
+							colors[k] = override.modifyColor(colors[k]);
 				} else if (textureId == -1 && wp != null) {
 					// Fall back to the default ground material if the tile is untextured
 					groundMaterial = override.groundMaterial;
 				}
 
+				if (blendColors)
+					for (int k = 0; k < 3; k++)
+						colors[k] = blending.getColor(corners[k], colors[k]);
+
 				int a = i * 3;
-				if (plugin.configGroundTextures && groundMaterial != null) {
-					for (int k = 0; k < 3; k++) {
-						materials[k] = groundMaterial.getRandomMaterial(
-							wp[0] + (v[a + k * 3] >> LOCAL_COORD_BITS),
-							wp[1] + (v[a + k * 3 + 2] >> LOCAL_COORD_BITS),
-							wp[2]
-						);
+				if (plugin.configGroundTextures) {
+					if (blendTextures) {
+						for (int k = 0; k < 3; k++)
+							materials[k] = blending.getMaterial(corners[k], materials[k]);
+					} else if (groundMaterial != null && wp != null) {
+						for (int k = 0; k < 3; k++) {
+							materials[k] = groundMaterial.getRandomMaterial(
+								wp[0] + (v[a + k * 3] >> LOCAL_COORD_BITS),
+								wp[1] + (v[a + k * 3 + 2] >> LOCAL_COORD_BITS),
+								wp[2]
+							);
+						}
 					}
 				}
 
@@ -476,25 +545,179 @@ public class RecreatedSceneRenderer {
 
 				int faceIdx = tb.putFace(
 					colors[0], colors[1], colors[2],
-					materials[0].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, false),
-					materials[1].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, false),
-					materials[2].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, false),
+					materials[0].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[0])),
+					materials[1].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[1])),
+					materials[2].packMaterialData(ModelOverride.NONE, UvType.GEOMETRY, blending.isOverlayEdge(corners[2])),
 					terrainData, terrainData, terrainData
 				);
 				for (int k = 0; k < 3; k++) {
-					int vx = v[a + k * 3], vy = v[a + k * 3 + 1], vz = v[a + k * 3 + 2];
+					int vx = v[a + k * 3], vy = v[a + k * 3 + 1] - override.heightOffset, vz = v[a + k * 3 + 2];
 					float dx = (float) vx / LOCAL_TILE_SIZE;
 					float dz = (float) vz / LOCAL_TILE_SIZE;
 					vb.putStaticVertex(
 						baseX + vx, vy, baseZ + vz,
 						uvx + dx * uvcos - dz * uvsin, uvy + dx * uvsin + dz * uvcos, 0,
-						0, -1, 0,
+						normals[k][0], normals[k][1], normals[k][2],
 						faceIdx, false
 					);
 				}
 			}
 		}
 		writeCache.release();
+	}
+
+	/**
+	 * Resolve the whole floor's tile overrides, and blend its tiles into each other with them
+	 */
+	private RecreatedFloorBlending blendFloor() {
+		var overrides = new IdentityHashMap<FloorTile, TileOverride[]>();
+		var overlayMainTiles = Collections.newSetFromMap(new IdentityHashMap<FloorTile, Boolean>());
+		for (var tile : floor) {
+			if (tile.worldPos == null)
+				continue;
+			var tileOverrides = new TileOverride[3];
+			if (resolveOverrides(tile, tileOverrides))
+				overlayMainTiles.add(tile);
+			overrides.put(tile, tileOverrides);
+		}
+		return new RecreatedFloorBlending(floor, overrides, overlayMainTiles);
+	}
+
+	/**
+	 * A captured floor tile's main, underlay & overlay tile overrides, from where the tile really is, returning whether the
+	 * main one was found by the tile's overlay. That's only kept on the override until it's next looked up, so it's read here.
+	 */
+	private boolean resolveOverrides(FloorTile tile, TileOverride[] overrides) {
+		int[] wp = tile.worldPos;
+		assert wp != null;
+		int overlay = TileOverride.OVERLAY_FLAG | tile.overlayId;
+		var vars = getTileColorVariables(tile);
+		overrides[0] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay, tile.underlayId), vars);
+		boolean mainIsOverlay = overrides[0].queriedAsOverlay;
+		overrides[1] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, tile.underlayId), vars);
+		overrides[2] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay), vars);
+		return mainIsOverlay;
+	}
+
+	/**
+	 * The recreated floor tile an object stands on, out of those recreated on its tile: the one nearest its height
+	 */
+	@Nullable
+	private static FloorTile findFloorTile(@Nullable List<FloorTile> candidates, int objectHeight) {
+		if (candidates == null)
+			return null;
+		FloorTile nearest = null;
+		int nearestDistance = Integer.MAX_VALUE;
+		for (var tile : candidates) {
+			int sum = 0;
+			for (int i = 1; i < tile.vertices.length; i += 3)
+				sum += tile.vertices[i];
+			int distance = Math.abs(sum / (tile.vertices.length / 3) - objectHeight);
+			if (distance < nearestDistance) {
+				nearest = tile;
+				nearestDistance = distance;
+			}
+		}
+		return nearest;
+	}
+
+	/**
+	 * The real tile, but with the recreated floor's colours, for objects to inherit them like SceneUploader does. Painted
+	 * tiles keep their corner colours, while shaped tiles become a tile of two triangles, shaped so the first is underlay
+	 * and the second overlay, which is all 117 HD picks a colour by.
+	 */
+	private static Tile standInTile(Tile real, FloorTile floor) {
+		var v = floor.vertices;
+		boolean painted = RecreatedFloorBlending.isPainted(floor);
+		int underlay = -1, overlay = -1, underlayTexture = -1, overlayTexture = -1;
+		int sw = floor.colors[0], se = sw, ne = sw, nw = sw;
+		for (int corner = 0; corner < floor.colors.length; corner++) {
+			int triangle = corner / 3;
+			int type = floor.overrideTypes == null ? 0 : floor.overrideTypes[triangle];
+			int texture = floor.textures == null ? -1 : floor.textures[triangle];
+			int color = floor.colors[corner];
+			int x = v[corner * 3], z = v[corner * 3 + 2];
+			if (type == 0) {
+				underlayTexture = texture;
+				if (x == 0 && z == 0)
+					sw = color;
+				else if (x != 0 && z == 0)
+					se = color;
+				else if (x != 0)
+					ne = color;
+				else
+					nw = color;
+			} else if (type == 2) {
+				if (overlay == -1) {
+					overlay = color;
+					overlayTexture = texture;
+				}
+			} else if (underlay == -1) {
+				underlay = color;
+				underlayTexture = texture;
+			}
+		}
+
+		Object standIn;
+		if (painted) {
+			int texture = underlayTexture;
+			int[] corners = { sw, se, ne, nw };
+			standIn = Reflection.stub(SceneTilePaint.class, name -> {
+				switch (name) {
+					case "getTexture":
+						return texture;
+					case "getRBG":
+						return 1;
+					case "getSwColor":
+						return corners[0];
+					case "getSeColor":
+						return corners[1];
+					case "getNeColor":
+						return corners[2];
+					case "getNwColor":
+						return corners[3];
+				}
+				return null;
+			});
+		} else {
+			int[] colors = { underlay != -1 ? underlay : overlay, overlay != -1 ? overlay : underlay };
+			int[] textures = underlayTexture == -1 && overlayTexture == -1 ? null : new int[] { underlayTexture, overlayTexture };
+			int overlayId = overlay == -1 ? 0 : floor.overlayId;
+			standIn = Reflection.stub(SceneTileModel.class, name -> {
+				switch (name) {
+					// ProceduralGenerator.TILE_OVERLAY_TRIS lists this shape as { underlay, overlay }
+					case "getShape":
+						return 2;
+					case "getTriangleColorA":
+					case "getTriangleColorB":
+					case "getTriangleColorC":
+						return colors;
+					case "getTriangleTextureId":
+						return textures;
+					case "getModelOverlay":
+						return overlayId;
+					case "getModelUnderlay":
+						return floor.underlayId;
+				}
+				return null;
+			});
+		}
+
+		boolean isPaint = painted;
+		return Reflection.wrap(Tile.class, real, name -> {
+			switch (name) {
+				case "getSceneTilePaint":
+					return isPaint ? standIn : Reflection.NULL;
+				case "getSceneTileModel":
+					return isPaint ? Reflection.NULL : standIn;
+			}
+			return null;
+		});
+	}
+
+
+	private static int packTile(int level, int tileExX, int tileExY) {
+		return level << 16 | tileExX << 8 | tileExY;
 	}
 
 	private static TileOverride resolveReplacements(TileOverride override, VariableSupplier vars) {
@@ -657,25 +880,5 @@ public class RecreatedSceneRenderer {
 
 	private static int packZone(int zx, int zz) {
 		return zx << 16 | zz;
-	}
-
-	private static Field field(Class<?> type, String name) {
-		try {
-			Field field = type.getDeclaredField(name);
-			field.setAccessible(true);
-			return field;
-		} catch (NoSuchFieldException ex) {
-			throw new IllegalStateException("117 HD no longer has " + type.getSimpleName() + "." + name, ex);
-		}
-	}
-
-	private static Method method(Class<?> type, String name, Class<?>... parameters) {
-		try {
-			Method method = type.getDeclaredMethod(name, parameters);
-			method.setAccessible(true);
-			return method;
-		} catch (NoSuchMethodException ex) {
-			throw new IllegalStateException("117 HD no longer has " + type.getSimpleName() + "." + name, ex);
-		}
 	}
 }

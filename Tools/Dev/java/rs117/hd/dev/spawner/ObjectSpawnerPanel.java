@@ -518,9 +518,16 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	private void setOnlyDrawTestObjects(boolean only) {
+		showOnlyDrawingTestObjects(only);
+		scenes.setOnlyDrawTestObjects(only);
+	}
+
+	/**
+	 * Show whether everything but test objects is hidden, without changing it. Must be called on the Swing thread.
+	 */
+	public void showOnlyDrawingTestObjects(boolean only) {
 		onlyTestObjectsButton.setSelected(only);
 		setHighlighted(onlyTestObjectsButton, only);
-		scenes.setOnlyDrawTestObjects(only);
 	}
 
 	/**

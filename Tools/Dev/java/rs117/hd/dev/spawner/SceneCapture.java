@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
-import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -20,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import net.runelite.api.*;
 import net.runelite.api.coords.*;
 import rs117.hd.HdPlugin;
+import rs117.hd.dev.Reflection;
 import rs117.hd.scene.ProceduralGenerator;
 import rs117.hd.utils.HDUtils;
 import rs117.hd.utils.ModelHash;
@@ -252,8 +252,8 @@ public class SceneCapture {
 		 * A stand-in model with the captured data, for 117 HD to upload. Anything else it's asked for is left empty.
 		 */
 		public Model toModel() {
-			return (Model) Proxy.newProxyInstance(Model.class.getClassLoader(), new Class<?>[] { Model.class }, (proxy, method, args) -> {
-				switch (method.getName()) {
+			return Reflection.stub(Model.class, name -> {
+				switch (name) {
 					case "getVerticesCount":
 						return verticesX.length;
 					case "getFaceCount":
@@ -308,38 +308,9 @@ public class SceneCapture {
 						return diameter;
 					case "getModelHeight":
 						return modelHeight;
-					case "getModel":
-						return proxy;
-					case "equals":
-						return proxy == args[0];
-					case "hashCode":
-						return System.identityHashCode(proxy);
-					case "toString":
-						return "CapturedModel";
 				}
-				return defaultValue(method.getReturnType());
-			});
-		}
-
-		@Nullable
-		private static Object defaultValue(Class<?> type) {
-			if (!type.isPrimitive() || type == void.class)
 				return null;
-			if (type == boolean.class)
-				return false;
-			if (type == char.class)
-				return (char) 0;
-			if (type == byte.class)
-				return (byte) 0;
-			if (type == short.class)
-				return (short) 0;
-			if (type == long.class)
-				return 0L;
-			if (type == float.class)
-				return 0f;
-			if (type == double.class)
-				return 0d;
-			return 0;
+			});
 		}
 
 		@Nullable
