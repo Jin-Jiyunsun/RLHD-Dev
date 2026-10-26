@@ -2,10 +2,15 @@ package rs117.hd;
 
 import java.io.InputStream;
 import java.util.Properties;
+
+import com.google.inject.*;
+import com.google.inject.Module;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.RuneLite;
 import net.runelite.client.RuneLiteProperties;
+import net.runelite.client.config.Config;
 import net.runelite.client.externalplugins.ExternalPluginManager;
+import net.runelite.client.plugins.PluginDescriptor;
 import rs117.hd.utils.Props;
 
 /**

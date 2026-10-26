@@ -1,6 +1,6 @@
 [submodule "RLHD"]
 	path = RLHD
-	url = https://github.com/RuffledPlume/RLHD
+	url = https://github.com/117HD/RLHD
 	branch = DevPlugin-Base
 [submodule "Tools/rlawt"]
 	path = Tools/rlawt

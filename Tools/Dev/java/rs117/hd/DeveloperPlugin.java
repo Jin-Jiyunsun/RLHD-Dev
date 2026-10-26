@@ -18,7 +18,6 @@ import net.runelite.client.plugins.PluginDescriptor;
 	description = "development and profiling tools for 117 HD",
 	tags = {"117", "hd", "developer", "development", "profiler"}
 )
-@PluginDependency(HdPlugin.class)
 public class DeveloperPlugin extends Plugin {
 
 	@Inject
