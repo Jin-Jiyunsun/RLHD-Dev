@@ -168,6 +168,10 @@ public class TestObjectRenderer {
 			// Draw the recreated scene's zones after 117 HD's, without letting a problem with them stop 117 HD
 			try {
 				switch (method.getName()) {
+					case "preSceneDraw":
+						// (scene, [projection,] camera..., hideRoofIds)
+						recreatedSceneRenderer.afterPreSceneDraw((Scene) args[0]);
+						break;
 					case "drawZoneOpaque":
 						// (projection, scene, zx, zz)
 						recreatedSceneRenderer.afterDrawZoneOpaque((Scene) args[1], (int) args[2], (int) args[3]);

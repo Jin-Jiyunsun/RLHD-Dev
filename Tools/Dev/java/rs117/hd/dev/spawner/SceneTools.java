@@ -375,100 +375,134 @@ public class SceneTools {
 		if (recreation == null)
 			return;
 
-		var spawner = spawnerTools.get();
 		long deadline = System.nanoTime() + SCENE_RECREATION_NANOS_PER_TICK;
 		while (recreation.next < recreation.pending.size() && System.nanoTime() < deadline) {
 			var pending = recreation.pending.get(recreation.next++);
-			var captured = pending.object;
-			var def = spawner.readTestObjectDefinition(captured.id);
-			if (def == null) {
-				recreation.skippedUnreadable++;
-				continue;
-			}
-			int[] modelIds = SceneCapture.getModelIds(def, pending.part);
-			if (modelIds == null) {
+			try {
+				recreateObject(recreation, pending);
+			} catch (RuntimeException ex) {
+				log.warn("Unable to recreate object {}", pending.object.id, ex);
 				recreation.skippedNoModel++;
-				continue;
 			}
-			int quarterTurns = pending.part.rotation & 3;
-			Consumer<ModelData> contour = def.contouredGround < 0 || recreation.terrain == null ? null : rotated -> SceneCapture.contour(
-				rotated,
-				def.contouredGround,
-				recreation.terrain,
-				recreation.capturedPlane + captured.plane,
-				captured.x + (pending.part.offset ? captured.xOffset : 0),
-				captured.y + (pending.part.offset ? captured.yOffset : 0),
-				captured.height
-			);
+		}
 
-			// Upload objects like static scenery where possible, so they're not redrawn every frame. Animations need
-			// RuneLiteObjects though, as do objects without a tile to be uploaded with.
-			Tile tile = def.animation == -1 ? getSceneTile(pending.location, pending.plane) : null;
-			if (tile != null) {
-				Model model = spawner.buildTestObjectModel(
-					def,
-					modelIds,
-					def.mirrored != pending.part.isMirrored(),
-					pending.part.isDiagonal(),
-					// Kept rotated like the client's, since static scenery isn't rotated again when drawn
-					modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, 0, true),
-					false
-				);
-				if (model == null) {
-					recreation.skippedNoModel++;
-					continue;
-				}
-				recreation.staticObjects.add(new StaticObject(
-					ModelHash.TYPE_OBJECT,
-					captured.id,
-					model,
-					HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
-					captured.modelOrientation,
-					mod(1024 + pending.orientation, 2048),
-					pending.plane,
-					pending.location.getX(),
-					pending.location.getY(),
-					pending.height
-				));
-				continue;
-			}
+		if (recreation.next < recreation.pending.size())
+			return;
+		finishSceneRecreation(recreation);
+	}
 
-			if (!pending.location.isInScene()) {
+	private void recreateObject(SceneRecreation recreation, PendingScenePart pending) {
+		var spawner = spawnerTools.get();
+		var captured = pending.object;
+
+		// Use the model the client drew where the capture kept one, since it's already rotated and bent like the original
+		if (captured.model != null) {
+			if (getSceneTile(pending.location, pending.plane) == null) {
 				recreation.skippedOutsideScene++;
-				continue;
+				return;
 			}
+			recreation.staticObjects.add(new StaticObject(
+				ModelHash.TYPE_OBJECT,
+				captured.id,
+				captured.model.toModel(),
+				HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
+				captured.modelOrientation,
+				mod(1024 + pending.orientation, 2048),
+				pending.plane,
+				pending.location.getX(),
+				pending.location.getY(),
+				pending.height
+			));
+			return;
+		}
 
-			// The renderer recognises test objects by their exact position, so move each off the spot where the real object
-			// it stands in for would be, and off other test objects, such as parts of the same wall
-			var location = pending.location;
-			int nudge = 0;
-			do {
-				location = location.dx(1);
-				nudge++;
-			} while (spawner.isTestObjectAt(location));
+		var def = spawner.readTestObjectDefinition(captured.id);
+		if (def == null) {
+			recreation.skippedUnreadable++;
+			return;
+		}
+		int[] modelIds = SceneCapture.getModelIds(def, pending.part);
+		if (modelIds == null) {
+			recreation.skippedNoModel++;
+			return;
+		}
+		int quarterTurns = pending.part.rotation & 3;
+		Consumer<ModelData> contour = def.contouredGround < 0 || recreation.terrain == null ? null : rotated -> SceneCapture.contour(
+			rotated,
+			def.contouredGround,
+			recreation.terrain,
+			recreation.capturedPlane + captured.plane,
+			captured.x + (pending.part.offset ? captured.xOffset : 0),
+			captured.y + (pending.part.offset ? captured.yOffset : 0),
+			captured.height
+		);
 
-			int nudgeBack = nudge;
+		// Upload objects like static scenery where possible, so they're not redrawn every frame. Animations need
+		// RuneLiteObjects though, as do objects without a tile to be uploaded with.
+		Tile tile = def.animation == -1 ? getSceneTile(pending.location, pending.plane) : null;
+		if (tile != null) {
 			Model model = spawner.buildTestObjectModel(
 				def,
 				modelIds,
 				def.mirrored != pending.part.isMirrored(),
 				pending.part.isDiagonal(),
-				// Moving the model back by the nudge lets pieces nudged by different amounts still meet without cracks
-				modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, nudgeBack, false),
+				// Kept rotated like the client's, since static scenery isn't rotated again when drawn
+				modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, 0, true),
 				false
 			);
 			if (model == null) {
 				recreation.skippedNoModel++;
-				continue;
+				return;
 			}
-			var object = spawner.placeTestObject(captured.id, def, model, location, pending.plane, pending.orientation, pending.height);
-			if (object != null)
-				recreatedSceneObjects.add(object);
+			recreation.staticObjects.add(new StaticObject(
+				ModelHash.TYPE_OBJECT,
+				captured.id,
+				model,
+				HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
+				captured.modelOrientation,
+				mod(1024 + pending.orientation, 2048),
+				pending.plane,
+				pending.location.getX(),
+				pending.location.getY(),
+				pending.height
+			));
+			return;
 		}
 
-		if (recreation.next < recreation.pending.size())
+		if (!pending.location.isInScene()) {
+			recreation.skippedOutsideScene++;
 			return;
+		}
 
+		// The renderer recognises test objects by their exact position, so move each off the spot where the real object
+		// it stands in for would be, and off other test objects, such as parts of the same wall
+		var location = pending.location;
+		int nudge = 0;
+		do {
+			location = location.dx(1);
+			nudge++;
+		} while (spawner.isTestObjectAt(location));
+
+		int nudgeBack = nudge;
+		Model model = spawner.buildTestObjectModel(
+			def,
+			modelIds,
+			def.mirrored != pending.part.isMirrored(),
+			pending.part.isDiagonal(),
+			// Moving the model back by the nudge lets pieces nudged by different amounts still meet without cracks
+			modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, nudgeBack, false),
+			false
+		);
+		if (model == null) {
+			recreation.skippedNoModel++;
+			return;
+		}
+		var object = spawner.placeTestObject(captured.id, def, model, location, pending.plane, pending.orientation, pending.height);
+		if (object != null)
+			recreatedSceneObjects.add(object);
+	}
+
+	private void finishSceneRecreation(SceneRecreation recreation) {
 		sceneRecreation = null;
 		recreatedStaticObjects = recreation.staticObjects;
 		recreatedFloor = recreation.floor;

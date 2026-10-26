@@ -5,7 +5,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.text.SimpleDateFormat;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
@@ -46,6 +48,8 @@ public class SceneCapture {
 	private static final int SHAPE_DECORATION_DIAGONAL_BOTH = 8;
 	private static final int SHAPE_CENTREPIECE = 10;
 	private static final int SHAPE_CENTREPIECE_DIAGONAL = 11;
+	private static final int SHAPE_ROOF_FIRST = 12;
+	private static final int SHAPE_ROOF_LAST = 21;
 	private static final int SHAPE_GROUND_DECORATION = 22;
 
 	/**
@@ -180,6 +184,188 @@ public class SceneCapture {
 		public int yOffset;
 		// Game objects' extra rotation, such as 45 degrees for diagonal objects
 		public int modelOrientation;
+		// The model the client drew, kept for objects it builds from more than their models in the cache, like roofs
+		@Nullable
+		public CapturedModel model;
+	}
+
+	/**
+	 * A model as the client drew it in the scene, already rotated and bent to the ground, with everything 117 HD reads
+	 * from a model when uploading static scenery
+	 */
+	public static class CapturedModel {
+		public float[] verticesX, verticesY, verticesZ;
+		public int[] faceIndices1, faceIndices2, faceIndices3;
+		public int[] faceColors1, faceColors2, faceColors3;
+		@Nullable
+		public short[] unlitFaceColors;
+		@Nullable
+		public byte[] faceTransparencies;
+		public byte transparency;
+		@Nullable
+		public short[] faceTextures;
+		@Nullable
+		public byte[] textureFaces;
+		@Nullable
+		public int[] texIndices1, texIndices2, texIndices3;
+		@Nullable
+		public int[] vertexNormalsX, vertexNormalsY, vertexNormalsZ;
+		@Nullable
+		public byte[] faceBias;
+		@Nullable
+		public byte[] faceRenderPriorities;
+		public int radius, diameter, modelHeight;
+
+		static CapturedModel of(Model model) {
+			int vertices = model.getVerticesCount();
+			int faces = model.getFaceCount();
+			var captured = new CapturedModel();
+			captured.verticesX = Arrays.copyOf(model.getVerticesX(), vertices);
+			captured.verticesY = Arrays.copyOf(model.getVerticesY(), vertices);
+			captured.verticesZ = Arrays.copyOf(model.getVerticesZ(), vertices);
+			captured.faceIndices1 = Arrays.copyOf(model.getFaceIndices1(), faces);
+			captured.faceIndices2 = Arrays.copyOf(model.getFaceIndices2(), faces);
+			captured.faceIndices3 = Arrays.copyOf(model.getFaceIndices3(), faces);
+			captured.faceColors1 = Arrays.copyOf(model.getFaceColors1(), faces);
+			captured.faceColors2 = Arrays.copyOf(model.getFaceColors2(), faces);
+			captured.faceColors3 = Arrays.copyOf(model.getFaceColors3(), faces);
+			captured.unlitFaceColors = copy(model.getUnlitFaceColors(), faces);
+			captured.faceTransparencies = copy(model.getFaceTransparencies(), faces);
+			captured.transparency = model.getTransparency();
+			captured.faceTextures = copy(model.getFaceTextures(), faces);
+			captured.textureFaces = copy(model.getTextureFaces(), faces);
+			captured.texIndices1 = copy(model.getTexIndices1());
+			captured.texIndices2 = copy(model.getTexIndices2());
+			captured.texIndices3 = copy(model.getTexIndices3());
+			captured.vertexNormalsX = copy(model.getVertexNormalsX(), vertices);
+			captured.vertexNormalsY = copy(model.getVertexNormalsY(), vertices);
+			captured.vertexNormalsZ = copy(model.getVertexNormalsZ(), vertices);
+			captured.faceBias = copy(model.getFaceBias(), faces);
+			captured.faceRenderPriorities = copy(model.getFaceRenderPriorities(), faces);
+			captured.radius = model.getRadius();
+			captured.diameter = model.getDiameter();
+			captured.modelHeight = model.getModelHeight();
+			return captured;
+		}
+
+		/**
+		 * A stand-in model with the captured data, for 117 HD to upload. Anything else it's asked for is left empty.
+		 */
+		public Model toModel() {
+			return (Model) Proxy.newProxyInstance(Model.class.getClassLoader(), new Class<?>[] { Model.class }, (proxy, method, args) -> {
+				switch (method.getName()) {
+					case "getVerticesCount":
+						return verticesX.length;
+					case "getFaceCount":
+						return faceIndices1.length;
+					case "getVerticesX":
+						return verticesX;
+					case "getVerticesY":
+						return verticesY;
+					case "getVerticesZ":
+						return verticesZ;
+					case "getFaceIndices1":
+						return faceIndices1;
+					case "getFaceIndices2":
+						return faceIndices2;
+					case "getFaceIndices3":
+						return faceIndices3;
+					case "getFaceColors1":
+						return faceColors1;
+					case "getFaceColors2":
+						return faceColors2;
+					case "getFaceColors3":
+						return faceColors3;
+					case "getUnlitFaceColors":
+						return unlitFaceColors;
+					case "getFaceTransparencies":
+						return faceTransparencies;
+					case "getTransparency":
+						return transparency;
+					case "getFaceTextures":
+						return faceTextures;
+					case "getTextureFaces":
+						return textureFaces;
+					case "getTexIndices1":
+						return texIndices1;
+					case "getTexIndices2":
+						return texIndices2;
+					case "getTexIndices3":
+						return texIndices3;
+					case "getVertexNormalsX":
+						return vertexNormalsX;
+					case "getVertexNormalsY":
+						return vertexNormalsY;
+					case "getVertexNormalsZ":
+						return vertexNormalsZ;
+					case "getFaceBias":
+						return faceBias;
+					case "getFaceRenderPriorities":
+						return faceRenderPriorities;
+					case "getRadius":
+						return radius;
+					case "getDiameter":
+						return diameter;
+					case "getModelHeight":
+						return modelHeight;
+					case "getModel":
+						return proxy;
+					case "equals":
+						return proxy == args[0];
+					case "hashCode":
+						return System.identityHashCode(proxy);
+					case "toString":
+						return "CapturedModel";
+				}
+				return defaultValue(method.getReturnType());
+			});
+		}
+
+		@Nullable
+		private static Object defaultValue(Class<?> type) {
+			if (!type.isPrimitive() || type == void.class)
+				return null;
+			if (type == boolean.class)
+				return false;
+			if (type == char.class)
+				return (char) 0;
+			if (type == byte.class)
+				return (byte) 0;
+			if (type == short.class)
+				return (short) 0;
+			if (type == long.class)
+				return 0L;
+			if (type == float.class)
+				return 0f;
+			if (type == double.class)
+				return 0d;
+			return 0;
+		}
+
+		@Nullable
+		private static int[] copy(@Nullable int[] array, int length) {
+			return array == null ? null : Arrays.copyOf(array, length);
+		}
+
+		@Nullable
+		private static int[] copy(@Nullable int[] array) {
+			return array == null ? null : array.clone();
+		}
+
+		@Nullable
+		private static byte[] copy(@Nullable byte[] array, int length) {
+			return array == null ? null : Arrays.copyOf(array, length);
+		}
+
+		@Nullable
+		private static byte[] copy(@Nullable byte[] array) {
+			return array == null ? null : array.clone();
+		}
+
+		@Nullable
+		private static short[] copy(@Nullable short[] array, int length) {
+			return array == null ? null : Arrays.copyOf(array, length);
+		}
 	}
 
 	/**
@@ -275,11 +461,13 @@ public class SceneCapture {
 						continue;
 
 					capturer.captureTile(tile);
-					capturer.captureGround(tile, z);
+					capturer.captureGround(tile);
 					capturedTiles.add(packTile(z, sceneLocation.getX(), sceneLocation.getY()));
 					// The ground under a bridge is kept as a separate tile, which is drawn along with the bridge
-					if (tile.getBridge() != null)
+					if (tile.getBridge() != null) {
 						capturer.captureTile(tile.getBridge());
+						capturer.captureGround(tile.getBridge());
+					}
 				}
 			}
 		}
@@ -346,20 +534,24 @@ public class SceneCapture {
 					object.getRenderable() == null || object.getRenderable() instanceof Actor ||
 					!object.getSceneMinLocation().equals(tile.getSceneLocation()))
 					continue;
-				var captured = capture(object, Kind.GAME, object.getConfig(), ModelHash.TYPE_GAME_OBJECT);
+				var captured = capture(tile, object, Kind.GAME, object.getConfig(), ModelHash.TYPE_GAME_OBJECT);
 				if (captured != null) {
 					captured.modelOrientation = object.getModelOrientation();
+					// The client builds some roofs from more than their models in the cache, so keep the model it draws
+					var renderable = object.getRenderable();
+					if (captured.shape >= SHAPE_ROOF_FIRST && captured.shape <= SHAPE_ROOF_LAST && renderable instanceof Model)
+						captured.model = CapturedModel.of((Model) renderable);
 					capture.objects.add(captured);
 				}
 			}
 
 			WallObject wall = tile.getWallObject();
 			if (wall != null && wall.getRenderable1() != null)
-				add(capture(wall, Kind.WALL, wall.getConfig(), ModelHash.TYPE_WALL_OBJECT));
+				add(capture(tile, wall, Kind.WALL, wall.getConfig(), ModelHash.TYPE_WALL_OBJECT));
 
 			DecorativeObject decoration = tile.getDecorativeObject();
 			if (decoration != null && decoration.getRenderable() != null) {
-				var captured = capture(decoration, Kind.DECORATION, decoration.getConfig(), ModelHash.TYPE_DECORATIVE_OBJECT);
+				var captured = capture(tile, decoration, Kind.DECORATION, decoration.getConfig(), ModelHash.TYPE_DECORATIVE_OBJECT);
 				if (captured != null) {
 					captured.xOffset = decoration.getXOffset();
 					captured.yOffset = decoration.getYOffset();
@@ -369,14 +561,16 @@ public class SceneCapture {
 
 			GroundObject ground = tile.getGroundObject();
 			if (ground != null && ground.getRenderable() != null)
-				add(capture(ground, Kind.GROUND, ground.getConfig(), ModelHash.TYPE_GROUND_OBJECT));
+				add(capture(tile, ground, Kind.GROUND, ground.getConfig(), ModelHash.TYPE_GROUND_OBJECT));
 		}
 
 		/**
 		 * Capture a tile's ground as triangles with a colour at each corner, the same way the client gives them to 117 HD.
-		 * Painted tiles are two triangles from the tile's corners, while shaped tiles have their own.
+		 * Painted tiles are two triangles from the tile's corners, while shaped tiles have their own. Like 117 HD, the
+		 * tile's heights, underlay & overlay come from the level it's drawn on, which isn't always the one it's kept on.
 		 */
-		void captureGround(Tile tile, int level) {
+		void captureGround(Tile tile) {
+			int level = tile.getRenderLevel();
 			int[][][] tileHeights = scene.getTileHeights();
 			var sceneLocation = tile.getSceneLocation();
 			var paint = tile.getSceneTilePaint();
@@ -465,7 +659,7 @@ public class SceneCapture {
 		}
 
 		@Nullable
-		private CapturedObject capture(TileObject object, Kind kind, int config, int type) {
+		private CapturedObject capture(Tile tile, TileObject object, Kind kind, int config, int type) {
 			if (visibility.isHiddenByOverride(object, type))
 				return null;
 
@@ -487,7 +681,8 @@ public class SceneCapture {
 			captured.x = object.getX() - cornerX;
 			captured.y = object.getY() - cornerY;
 			captured.height = object.getZ() - groundHeight;
-			captured.plane = object.getPlane() - originPlane;
+			// The level it's drawn on, whose ground it follows, which isn't always the one it's kept on
+			captured.plane = tile.getRenderLevel() - originPlane;
 			return captured;
 		}
 	}

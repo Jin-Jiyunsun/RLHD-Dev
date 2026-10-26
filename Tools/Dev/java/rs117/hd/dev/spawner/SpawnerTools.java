@@ -839,7 +839,8 @@ public class SpawnerTools {
 			for (int i = 0; i < min(def.recolorFrom.length, def.recolorTo.length); i++)
 				modelData.recolor(def.recolorFrom[i], def.recolorTo[i]);
 		}
-		if (def.retextureFrom != null && def.retextureTo != null) {
+		// Models without textures have nothing to retexture, and can't have their textures cloned
+		if (def.retextureFrom != null && def.retextureTo != null && modelData.getFaceTextures() != null) {
 			modelData = modelData.cloneTextures();
 			for (int i = 0; i < min(def.retextureFrom.length, def.retextureTo.length); i++)
 				modelData.retexture(def.retextureFrom[i], def.retextureTo[i]);

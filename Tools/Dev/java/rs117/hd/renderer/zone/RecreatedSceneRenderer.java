@@ -29,8 +29,10 @@ import rs117.hd.scene.model_overrides.UvType;
 import rs117.hd.scene.tile_overrides.TileOverride;
 import rs117.hd.scene.water_types.WaterType;
 import rs117.hd.utils.DestructibleHandler;
+import rs117.hd.utils.ColorUtils;
 import rs117.hd.utils.HDUtils;
 import rs117.hd.utils.ModelHash;
+import rs117.hd.utils.VariableSupplier;
 import rs117.hd.utils.buffer.GLBuffer;
 import rs117.hd.utils.buffer.GLTextureBuffer;
 import rs117.hd.utils.buffer.GpuIntBuffer;
@@ -383,7 +385,8 @@ public class RecreatedSceneRenderer {
 	/**
 	 * Draw a recreated scene capture's floor tiles from their triangles. Their tile overrides are picked here, from where the
 	 * tiles really are, so edits to tile_overrides.json show up whenever the floor is uploaded again. Overrides apply like
-	 * they do on real tiles, except for blending, water and replacements, which need the real scene.
+	 * they do on real tiles, with their replacements picked by the captured tile's colour, except for blending and water,
+	 * which need the real scene.
 	 */
 	private void uploadFloor(
 		SceneUploader uploader,
@@ -414,9 +417,10 @@ public class RecreatedSceneRenderer {
 			int[] wp = tile.worldPos;
 			if (wp != null) {
 				int overlay = TileOverride.OVERLAY_FLAG | tile.overlayId;
-				overrides[0] = tileOverrideManager.getOverrideBeforeReplacements(wp, overlay, tile.underlayId);
-				overrides[1] = tileOverrideManager.getOverrideBeforeReplacements(wp, tile.underlayId);
-				overrides[2] = tileOverrideManager.getOverrideBeforeReplacements(wp, overlay);
+				var vars = getTileColorVariables(tile);
+				overrides[0] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay, tile.underlayId), vars);
+				overrides[1] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, tile.underlayId), vars);
+				overrides[2] = resolveReplacements(tileOverrideManager.getOverrideBeforeReplacements(wp, overlay), vars);
 			}
 
 			for (int t = 0, i = 0; i < tile.colors.length; t++, i += 3) {
@@ -493,6 +497,40 @@ public class RecreatedSceneRenderer {
 		writeCache.release();
 	}
 
+	private static TileOverride resolveReplacements(TileOverride override, VariableSupplier vars) {
+		return override.isConstant() ? override : override.resolveReplacements(vars);
+	}
+
+	/**
+	 * The h, s & l variables tile override replacements pick by, from the captured tile's colour like TileOverrideVariables
+	 * gets them from a real tile: its south-western corner, preferring the underlay
+	 */
+	private static VariableSupplier getTileColorVariables(FloorTile tile) {
+		int color = tile.colors[0];
+		var v = tile.vertices;
+		for (int corner = 0; corner < tile.colors.length; corner++) {
+			int triangle = corner / 3;
+			boolean overlay = tile.overrideTypes != null && tile.overrideTypes[triangle] == 2;
+			if (!overlay && v[corner * 3] == 0 && v[corner * 3 + 2] == 0) {
+				color = tile.colors[corner];
+				break;
+			}
+		}
+		int[] hsl = new int[3];
+		ColorUtils.unpackRawHsl(hsl, color);
+		return name -> {
+			switch (name) {
+				case "h":
+					return hsl[0];
+				case "s":
+					return hsl[1];
+				case "l":
+					return hsl[2];
+			}
+			throw new IllegalArgumentException("Undefined variable '" + name + "'");
+		};
+	}
+
 	@Nullable
 	private Zone getDrawableZone(Scene scene, int zx, int zz) {
 		if (contents.isEmpty() || scene == null || scene.getWorldViewId() != WorldView.TOPLEVEL)
@@ -532,7 +570,34 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * Draw the recreated zone's transparent models, right after 117 HD has drawn the real zone's. They're drawn unsorted.
+	 * Sort the recreated zones' transparent faces for this frame, like WorldViewContext.sortStaticAlphaModels, right after
+	 * 117 HD has queued sorting its own. Zones are culled by the real zones' visibility from the previous frame.
+	 */
+	public void afterPreSceneDraw(Scene scene) {
+		if (contents.isEmpty() || scene == null || scene.getWorldViewId() != WorldView.TOPLEVEL || plugin.renderer != uploadedFor)
+			return;
+		var root = sceneManager.getRoot();
+		if (root == null || root.sceneContext == null || !(plugin.renderer instanceof ZoneRenderer))
+			return;
+		var camera = ((ZoneRenderer) plugin.renderer).sceneCamera;
+		int offset = root.sceneContext.sceneOffset >> 3;
+		int camPosX = (int) camera.getPositionX();
+		int camPosZ = (int) camera.getPositionZ();
+		for (int zx = 0; zx < NUM_ZONES; zx++) {
+			for (int zz = 0; zz < NUM_ZONES; zz++) {
+				Zone zone = zones[zx][zz];
+				if (zone == null || !zone.initialized || zone.alphaModels.isEmpty() || !zone.inSceneFrustum)
+					continue;
+				int dx = camPosX - ((zx - offset) << 10);
+				int dz = camPosZ - ((zz - offset) << 10);
+				zone.dist = dx * dx + dz * dz;
+				zone.alphaStaticModelSort(camera);
+			}
+		}
+	}
+
+	/**
+	 * Draw the recreated zone's transparent models, right after 117 HD has drawn the real zone's
 	 */
 	public void afterDrawZoneAlpha(Scene scene, int level, int zx, int zz) throws IllegalAccessException {
 		Zone zone = getDrawableZone(scene, zx, zz);
@@ -549,6 +614,10 @@ public class RecreatedSceneRenderer {
 			renderer.directionalCmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) program.get(renderer));
 			zone.renderAlpha(renderer.directionalCmd, zx - offset, zz - offset, level, root, true, SHOULD_DRAW_ROOF_SHADOWS.getBoolean(renderer));
 		}
+
+		// Order the zone's models back to front, as 117 HD does for its own zones
+		if (level == 0 && zone.inSceneFrustum)
+			zone.alphaSort(zx - offset, zz - offset, renderer.sceneCamera);
 
 		if (zone.inSceneFrustum) {
 			// Like 117 HD's own static alpha: first blend the colors without writing depth, then write depth without color
