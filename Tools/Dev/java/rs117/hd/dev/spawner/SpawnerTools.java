@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
+import java.util.function.UnaryOperator;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Named;
@@ -97,6 +98,9 @@ public class SpawnerTools {
 	@Inject
 	private TestObjectLights testObjectLights;
 
+	@Inject
+	private SceneTools sceneTools;
+
 	private boolean started;
 
 	private int testSpotanimId = -1;
@@ -145,6 +149,7 @@ public class SpawnerTools {
 		eventBus.register(this);
 		testObjectRenderer.startUp();
 		testObjectLights.startUp();
+		sceneTools.startUp();
 
 		// Swing components must only be created and modified on the Swing thread. The spawner must stay developer-mode only,
 		// since RuneLite's plugin rules reject user-entered IDs and spawned content for normal users.
@@ -157,7 +162,7 @@ public class SpawnerTools {
 					.icon(ObjectSpawnerPanel.createIcon())
 					// Sorted by ascending priority, so this goes right below RuneLite's configuration button at priority 0
 					.priority(1)
-					.panel(objectSpawnerPanel = new ObjectSpawnerPanel(this))
+					.panel(objectSpawnerPanel = new ObjectSpawnerPanel(this, sceneTools))
 					.build();
 				clientToolbar.addNavigation(objectSpawnerButton);
 			});
@@ -181,6 +186,7 @@ public class SpawnerTools {
 			stopTestSpotanim();
 			stopTestProjectile();
 			clearTestObjects();
+			sceneTools.shutDown();
 			testObjectLights.shutDown();
 			testObjectRenderer.shutDown();
 		});
@@ -192,7 +198,7 @@ public class SpawnerTools {
 		if (gameStateChanged.getGameState() != GameState.LOADING)
 			return;
 		stopTestProjectile();
-		if (!testObjectRenderer.getTestObjects().isEmpty()) {
+		if (!testObjectRenderer.getTestObjects().isEmpty() || sceneTools.hasRecreatedScene()) {
 			clearTestObjects();
 			postMessage("Removed test objects due to scene load");
 		}
@@ -673,7 +679,7 @@ public class SpawnerTools {
 	 * Decode one object's definition from the cache data the client has loaded. Must be called on the client thread.
 	 */
 	@Nullable
-	private TestObjectDefinition readTestObjectDefinition(int objectId) {
+	TestObjectDefinition readTestObjectDefinition(int objectId) {
 		assert client.isClientThread();
 		var cached = testObjectDefinitions == null ? null : testObjectDefinitions.get(objectId);
 		if (cached != null)
@@ -778,7 +784,7 @@ public class SpawnerTools {
 			return null;
 		}
 
-		Model model = buildTestObjectModel(def, def.models, reportErrors);
+		Model model = buildTestObjectModel(def, def.models, false, false, null, reportErrors);
 		if (model == null)
 			return null;
 
@@ -795,14 +801,23 @@ public class SpawnerTools {
 			location = location.dx(1);
 		} while (testObjectRenderer.isTestObjectAt(location.getX(), location.getY()));
 
-		return placeTestObject(objectId, def, model, location, worldView.getPlane());
+		return placeTestObject(objectId, def, model, location, worldView.getPlane(), 0, null);
 	}
 
 	/**
-	 * Build an object's model from some of its model IDs, applying the definition's model changes like the client does
+	 * Build an object's model from some of its model IDs, applying the definition's model changes like the client does.
+	 * Mirroring, the 45 degree turn of diagonal wall decorations and finishing the model in place of scaling & offsetting
+	 * it are for objects recreated from a scene capture, which the client builds from more than the centrepiece model.
 	 */
 	@Nullable
-	private Model buildTestObjectModel(TestObjectDefinition def, int[] modelIds, boolean reportErrors) {
+	Model buildTestObjectModel(
+		TestObjectDefinition def,
+		int[] modelIds,
+		boolean mirror,
+		boolean diagonal,
+		@Nullable UnaryOperator<ModelData> finish,
+		boolean reportErrors
+	) {
 		ModelData[] models = new ModelData[modelIds.length];
 		for (int i = 0; i < models.length; i++) {
 			models[i] = client.loadModelData(modelIds[i]);
@@ -814,7 +829,11 @@ public class SpawnerTools {
 		}
 
 		// Apply the object definition's model changes the same way the client does
-		ModelData modelData = models.length == 1 ? models[0] : client.mergeModels(models);
+		ModelData modelData = models.length == 1 && !mirror && !diagonal ? models[0] : client.mergeModels(models);
+		if (mirror)
+			SceneCapture.mirror(modelData);
+		if (diagonal)
+			SceneCapture.rotateDiagonal(modelData);
 		if (def.recolorFrom != null && def.recolorTo != null) {
 			modelData = modelData.cloneColors();
 			for (int i = 0; i < min(def.recolorFrom.length, def.recolorTo.length); i++)
@@ -825,7 +844,10 @@ public class SpawnerTools {
 			for (int i = 0; i < min(def.retextureFrom.length, def.retextureTo.length); i++)
 				modelData.retexture(def.retextureFrom[i], def.retextureTo[i]);
 		}
-		if (def.scale != null || def.offset != null) {
+		if (finish != null) {
+			// Recreated objects are scaled, offset and more along the world's axes after rotating, like the client does
+			modelData = finish.apply(modelData.cloneVertices());
+		} else if (def.scale != null || def.offset != null) {
 			modelData = modelData.cloneVertices();
 			if (def.scale != null)
 				modelData.scale(def.scale[0], def.scale[1], def.scale[2]);
@@ -843,10 +865,19 @@ public class SpawnerTools {
 	}
 
 	/**
-	 * Spawn a test object with a built model. Its location must be free of other test objects.
+	 * Spawn a test object with a built model, for spawned, previewed and animated recreated objects. Its location must be
+	 * free of other test objects, and a null height keeps it on the ground.
 	 */
 	@Nullable
-	private RuneLiteObject placeTestObject(int objectId, TestObjectDefinition def, Model model, LocalPoint location, int plane) {
+	RuneLiteObject placeTestObject(
+		int objectId,
+		TestObjectDefinition def,
+		Model model,
+		LocalPoint location,
+		int plane,
+		int orientation,
+		@Nullable Integer height
+	) {
 		if (!developerMode)
 			return null;
 		// Purely visual: a RuneLiteObject has no clickbox or menu entries, and nothing is sent to the server
@@ -857,9 +888,16 @@ public class SpawnerTools {
 		object.setShouldLoop(true);
 		object.setDrawFrontTilesFirst(false);
 		object.setLocation(location, plane);
+		object.setOrientation(orientation);
+		if (height != null)
+			object.setZ(height);
 		object.setActive(true);
 		testObjectRenderer.add(object, objectId);
 		return object;
+	}
+
+	boolean isTestObjectAt(LocalPoint location) {
+		return testObjectRenderer.isTestObjectAt(location.getX(), location.getY());
 	}
 
 	private void clearTestObjects() {
@@ -869,6 +907,7 @@ public class SpawnerTools {
 		testObjectPreview = null;
 		testObjectPreviewId = -1;
 		spawnedTestObjects.clear();
+		sceneTools.removeRecreatedScene();
 		notifySpawnedTestObjectsChanged();
 	}
 
@@ -933,6 +972,11 @@ public class SpawnerTools {
 				sb.setLength(0);
 			}
 		}
+	}
+
+	@Nullable
+	ObjectSpawnerPanel getPanel() {
+		return objectSpawnerPanel;
 	}
 
 	void postMessage(String message) {

@@ -11,12 +11,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import net.runelite.api.*;
+import rs117.hd.scene.EnvironmentManager;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.LightManager;
 import rs117.hd.scene.ModelOverrideManager;
+import rs117.hd.scene.environments.Environment;
 import rs117.hd.scene.lights.Light;
 import rs117.hd.scene.lights.LightDefinition;
 import rs117.hd.utils.ModelHash;
@@ -33,11 +36,14 @@ public class HdInternals {
 	public static final String GAMEVAL_SPOTANIMS = "spotanims";
 
 	private static final Field LIGHTS = field(LightManager.class, "lights");
+	private static final Field RELOAD_LIGHTS = field(LightManager.class, "reloadLights");
+	private static final Field NPC_LIGHTS = field(LightManager.class, "NPC_LIGHTS");
 	private static final Field OBJECT_LIGHTS = field(LightManager.class, "OBJECT_LIGHTS");
 	private static final Field GRAPHICS_OBJECT_LIGHTS = field(LightManager.class, "GRAPHICS_OBJECT_LIGHTS");
 	private static final Field PROJECTILE_LIGHTS = field(LightManager.class, "PROJECTILE_LIGHTS");
 	private static final Field MODEL_OVERRIDES = field(ModelOverrideManager.class, "modelOverrides");
 	private static final Field GAMEVAL_PATH = field(GamevalManager.class, "GAMEVAL_PATH");
+	private static final Field ENVIRONMENTS = field(EnvironmentManager.class, "environments");
 
 	@Inject
 	private Client client;
@@ -50,6 +56,9 @@ public class HdInternals {
 
 	@Inject
 	private ModelOverrideManager modelOverrideManager;
+
+	@Inject
+	private EnvironmentManager environmentManager;
 
 	@SuppressWarnings("unchecked")
 	public List<Light> getLights() {
@@ -73,6 +82,38 @@ public class HdInternals {
 	public List<LightDefinition> getObjectLights(int objectId) {
 		assert client.isClientThread();
 		return ((ListMultimap<Integer, LightDefinition>) get(OBJECT_LIGHTS, lightManager)).get(objectId);
+	}
+
+	@SuppressWarnings("unchecked")
+	public List<LightDefinition> getNpcLights(int npcId) {
+		assert client.isClientThread();
+		return ((ListMultimap<Integer, LightDefinition>) get(NPC_LIGHTS, lightManager)).get(npcId);
+	}
+
+	/**
+	 * Have 117 HD load the scene's lights again before it next updates them, like it does after lights.json changes
+	 */
+	public void reloadLights() {
+		assert client.isClientThread();
+		try {
+			RELOAD_LIGHTS.setBoolean(lightManager, true);
+		} catch (IllegalAccessException ex) {
+			throw new IllegalStateException(ex);
+		}
+	}
+
+	/**
+	 * The environments.json environment with this name, as 117 HD has it loaded now, or null if there's none
+	 */
+	@Nullable
+	public Environment findEnvironment(String name) {
+		assert client.isClientThread();
+		if (name.equals(Environment.DEFAULT.toString()))
+			return Environment.DEFAULT;
+		for (var environment : (Environment[]) get(ENVIRONMENTS, environmentManager))
+			if (name.equals(environment.toString()))
+				return environment;
+		return null;
 	}
 
 	private Set<Integer> getLightIds(Field field) {

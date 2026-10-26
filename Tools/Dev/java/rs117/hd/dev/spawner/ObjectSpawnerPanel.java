@@ -31,8 +31,10 @@ import javax.annotation.Nullable;
 import javax.swing.AbstractButton;
 import javax.swing.AbstractListModel;
 import javax.swing.BorderFactory;
+import javax.swing.Box;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JPanel;
@@ -70,6 +72,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final int DEFAULT_PROJECTILE_START_HEIGHT = 150;
 	private static final int SPAWNED_ROW_HEIGHT = 32;
 	private static final int SPAWNED_VISIBLE_ROWS = 5;
+	private static final int SAVED_CAPTURES_VISIBLE_ROWS = 10;
 	// Room above and below the line dividing sections, the same in every tab
 	private static final int SECTION_GAP = 10;
 	private static final Color SIDEBAR_ICON_COLOR = new Color(0xDC8A00);
@@ -86,7 +89,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private enum Mode {
 		OBJECTS("Objects", "spawn", "Clear spawned objects"),
 		SPOTANIMS("Spotanims", "play", "Stop spotanim"),
-		PROJECTILES("Projectiles", "fire", "Stop projectile");
+		PROJECTILES("Projectiles", "fire", "Stop projectile"),
+		SCENES("Scenes", "recreate", "Remove recreated scene");
 
 		final String label;
 		final String action;
@@ -106,6 +110,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	private final SpawnerTools spawner;
+	private final SceneTools scenes;
 	private final JButton[] modeButtons = new JButton[Mode.values().length];
 	private final IconTextField searchBar = new IconTextField();
 	private final JToggleButton lightsFilterButton = new JToggleButton(new ImageIcon(createLightbulbIcon(FILTER_ICON_SIZE)));
@@ -118,7 +123,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JPanel startHeightRow = new JPanel(new BorderLayout(6, 0));
 	private final JTextField startFromField = new JTextField();
 	private final JButton clearButton = new JButton();
-	// Two rows of tabs, since they don't all fit across the narrow sidebar
+	// Two rows of tabs, since four don't fit across the narrow sidebar
 	private final JPanel modeRow = new JPanel(new GridLayout(0, 2, 4, 4));
 	private final JPanel filterRow = new JPanel(new GridLayout(1, 2, 4, 0));
 	private final JPanel controls = new JPanel(new GridLayout(0, 1, 0, 4));
@@ -130,6 +135,18 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JPanel spawnedRows = new SpawnedRowsPanel();
 	private final JLabel listHeader = createHeader("");
 	private final JPanel listSection = new JPanel(new BorderLayout(0, 4));
+	private final JPanel scenesSection = new JPanel(new BorderLayout(0, 6));
+	private final JPanel recreatedSceneColumn = new JPanel(new GridLayout(0, 1, 0, 4));
+	private final JTextField sceneNameField = new JTextField();
+	private final JList<String> sceneCaptureList = new JList<>() {
+		// Fit the sidebar's width, cutting long names off rather than widening it
+		@Override
+		public boolean getScrollableTracksViewportWidth() {
+			return true;
+		}
+	};
+	private final JButton recreateButton = createButton("Recreate scene");
+	private final JToggleButton onlyTestObjectsButton = new JToggleButton("Hide everything else");
 	private final ResultsModel results = new ResultsModel();
 	private final JList<Entry> resultList = new JList<>(results) {
 		// Always fit the sidebar's width, otherwise one long name widens every row and pushes the flags out of view
@@ -164,9 +181,10 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private boolean loop = true;
 	private boolean frameTimings;
 
-	public ObjectSpawnerPanel(SpawnerTools spawner) {
+	public ObjectSpawnerPanel(SpawnerTools spawner, SceneTools scenes) {
 		super(false);
 		this.spawner = spawner;
+		this.scenes = scenes;
 
 		setLayout(new BorderLayout(0, 6));
 		setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -248,6 +266,11 @@ public class ObjectSpawnerPanel extends PluginPanel {
 					break;
 				case PROJECTILES:
 					spawner.stopProjectileAndNotify();
+					break;
+				case SCENES:
+					scenes.removeRecreatedSceneAndNotify();
+					// Show everything again, undoing what recreating did
+					setOnlyDrawTestObjects(false);
 					break;
 			}
 		});
@@ -361,6 +384,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		listSection.add(scrollPane, BorderLayout.CENTER);
 		add(listSection, BorderLayout.CENTER);
 
+		createScenesSection();
+
 		setSpawnedObjects(List.of());
 		setFilter(Filter.ALL);
 		setMode(Mode.OBJECTS);
@@ -372,6 +397,157 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		spawner.loadTestObjectDefinitions(this::setDefinitions);
 		if (!spotanimsLoaded)
 			spawner.loadSpotanimNames(this::setSpotanims);
+		if (mode == Mode.SCENES)
+			refreshSceneCaptures(null);
+	}
+
+	/**
+	 * Build the tab for capturing the scene to a file, and recreating saved captures in the player's region
+	 */
+	private void createScenesSection() {
+		JLabel nameLabel = createLabel("Name");
+		sceneNameField.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		sceneNameField.putClientProperty("JTextField.placeholderText", "Defaults to environment & time");
+		JPanel nameRow = new JPanel(new BorderLayout(6, 0));
+		nameRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		nameRow.add(nameLabel, BorderLayout.WEST);
+		nameRow.add(sceneNameField, BorderLayout.CENTER);
+
+		JComboBox<SceneCapture.Area> areaList = new JComboBox<>(SceneCapture.Area.values());
+		areaList.setSelectedItem(SceneCapture.Area.SCENE);
+		JButton captureButton = createButton("Capture scene");
+		captureButton.addActionListener(e -> scenes.captureScene(
+			sceneNameField.getText().trim(),
+			(SceneCapture.Area) areaList.getSelectedItem()
+		));
+
+		JPanel captureColumn = new JPanel(new GridLayout(0, 1, 0, 4));
+		captureColumn.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		captureColumn.add(createHeader("Capture scene"));
+		captureColumn.add(nameRow);
+		captureColumn.add(areaList);
+		captureColumn.add(captureButton);
+
+		JTextArea captureInfo = createWrappingText();
+		captureInfo.setText("Saves the objects, NPCs, ground and environment the game is drawing in the chosen area to " +
+							".runelite/117hd/scene_captures.");
+
+		styleButton(onlyTestObjectsButton);
+		onlyTestObjectsButton.setToolTipText(
+			"Only draw spawned & recreated objects and your character, hiding the ground, objects, NPCs and other players");
+		onlyTestObjectsButton.addActionListener(e -> setOnlyDrawTestObjects(onlyTestObjectsButton.isSelected()));
+		recreateButton.addActionListener(e -> recreateSelectedSceneCapture());
+
+		// Saved captures scroll once there are more than fit, and double-clicking one recreates it
+		sceneCaptureList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+		sceneCaptureList.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		sceneCaptureList.setFont(FontManager.getRunescapeSmallFont());
+		sceneCaptureList.setVisibleRowCount(SAVED_CAPTURES_VISIBLE_ROWS);
+		sceneCaptureList.addListSelectionListener(e -> recreateButton.setEnabled(sceneCaptureList.getSelectedValue() != null));
+		sceneCaptureList.addMouseListener(new MouseAdapter() {
+			@Override
+			public void mouseClicked(MouseEvent e) {
+				if (e.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(e))
+					recreateSelectedSceneCapture();
+			}
+		});
+		JScrollPane sceneCaptureScroll = new JScrollPane(
+			sceneCaptureList,
+			JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+			JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+		);
+		sceneCaptureScroll.setBorder(BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR));
+		// Three sections in the order they're used: capturing, picking a capture to recreate, then adjusting what's recreated
+		JPanel capturePart = new JPanel(new BorderLayout(0, 4));
+		capturePart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		capturePart.setBorder(createSectionDivider());
+		capturePart.add(captureColumn, BorderLayout.NORTH);
+		capturePart.add(captureInfo, BorderLayout.CENTER);
+
+		JPanel savedPart = new JPanel(new BorderLayout(0, 4));
+		savedPart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		savedPart.setBorder(createSectionDivider());
+		// Pick up captures added, renamed or deleted in the folder outside the client
+		JButton refreshButton = createIconButton(
+			createRotateIcon(true),
+			"Reload saved captures from the folder",
+			() -> refreshSceneCaptures(null)
+		);
+		JPanel savedHeader = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
+		savedHeader.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		savedHeader.add(createHeader("Saved captures"));
+		savedHeader.add(Box.createHorizontalStrut(6));
+		savedHeader.add(refreshButton);
+		savedPart.add(savedHeader, BorderLayout.NORTH);
+		savedPart.add(sceneCaptureScroll, BorderLayout.CENTER);
+		savedPart.add(recreateButton, BorderLayout.SOUTH);
+
+		recreatedSceneColumn.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		recreatedSceneColumn.add(createHeader("Recreated scene"));
+		recreatedSceneColumn.add(onlyTestObjectsButton);
+		JTextArea recreateInfo = createWrappingText();
+		recreateInfo.setText("Recreated scenes line up with your region's grid, keep their height relative to you, use the " +
+							 "captured environment, and stay until removed or the scene reloads");
+		JPanel recreatedPart = new JPanel(new BorderLayout(0, 4));
+		recreatedPart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		recreatedPart.add(recreatedSceneColumn, BorderLayout.NORTH);
+		recreatedPart.add(recreateInfo, BorderLayout.CENTER);
+
+		JPanel lowerParts = new JPanel(new BorderLayout(0, 6));
+		lowerParts.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		lowerParts.add(savedPart, BorderLayout.NORTH);
+		lowerParts.add(recreatedPart, BorderLayout.CENTER);
+		JPanel parts = new JPanel(new BorderLayout(0, 6));
+		parts.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		parts.add(capturePart, BorderLayout.NORTH);
+		parts.add(lowerParts, BorderLayout.CENTER);
+		scenesSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		scenesSection.add(parts, BorderLayout.NORTH);
+		updateSceneCaptures(List.of(), null);
+	}
+
+	/**
+	 * Recreate the selected capture, hiding everything else to see it on its own, which saves a step
+	 */
+	private void recreateSelectedSceneCapture() {
+		String selected = sceneCaptureList.getSelectedValue();
+		if (selected == null)
+			return;
+		scenes.recreateSceneCapture(selected + ".json");
+		setOnlyDrawTestObjects(true);
+	}
+
+	private void setOnlyDrawTestObjects(boolean only) {
+		onlyTestObjectsButton.setSelected(only);
+		setHighlighted(onlyTestObjectsButton, only);
+		scenes.setOnlyDrawTestObjects(only);
+	}
+
+	/**
+	 * Select a capture once the list has been refreshed, such as one which was just saved. Must be called on the Swing thread.
+	 */
+	public void setSelectedSceneCapture(String fileName) {
+		refreshSceneCaptures(fileName);
+	}
+
+	private void refreshSceneCaptures(@Nullable String selectFileName) {
+		scenes.listSceneCaptures(fileNames -> updateSceneCaptures(fileNames, selectFileName));
+	}
+
+	private void updateSceneCaptures(List<String> fileNames, @Nullable String selectFileName) {
+		String previous = selectFileName != null ? stripJsonExtension(selectFileName) : sceneCaptureList.getSelectedValue();
+		String[] names = fileNames.stream().map(ObjectSpawnerPanel::stripJsonExtension).toArray(String[]::new);
+		sceneCaptureList.setListData(names);
+		if (previous != null) {
+			sceneCaptureList.setSelectedValue(previous, true);
+		} else if (names.length > 0) {
+			sceneCaptureList.setSelectedIndex(0);
+		}
+		recreateButton.setEnabled(sceneCaptureList.getSelectedValue() != null);
+	}
+
+	private static String stripJsonExtension(String fileName) {
+		return fileName.endsWith(".json") ? fileName.substring(0, fileName.length() - 5) : fileName;
 	}
 
 	@Override
@@ -489,14 +665,17 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		// Only show the settings which apply to the current list
 		controls.removeAll();
 		controls.add(modeRow);
-		controls.add(filterRow);
+		if (mode != Mode.SCENES)
+			controls.add(filterRow);
 		if (mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES)
 			controls.add(loopButton);
 		if (mode == Mode.SPOTANIMS)
 			controls.add(frameTimingsButton);
-		// The clear button goes with the spawned objects it clears, where there are any
+		// The clear button goes with what it clears where there's a section for it: the spawned objects or recreated scene
 		if (mode == Mode.OBJECTS) {
 			spawnedSection.add(clearButton, BorderLayout.SOUTH);
+		} else if (mode == Mode.SCENES) {
+			recreatedSceneColumn.add(clearButton);
 		} else {
 			controls.add(clearButton);
 		}
@@ -512,6 +691,16 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		// Divide the settings from the list like the spawned objects are, where there's no spawned objects box to do it
 		topSection.setBorder(mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES ? createSectionDivider() : null);
 
+		// The scenes tab has no list to search, so it takes the list's place
+		JPanel center = mode == Mode.SCENES ? scenesSection : listSection;
+		if (center.getParent() != this) {
+			remove(mode == Mode.SCENES ? listSection : scenesSection);
+			add(center, BorderLayout.CENTER);
+			revalidate();
+			repaint();
+		}
+		if (mode == Mode.SCENES)
+			refreshSceneCaptures(null);
 		updateResults();
 	}
 
@@ -700,6 +889,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private void updateResults() {
 		// The list is about to change underneath the cursor
 		setHoveredEntry(null);
+		if (mode == Mode.SCENES)
+			return;
 
 		List<Entry> entries = mode == Mode.OBJECTS ? objectEntries : mode == Mode.SPOTANIMS ? spotanimEntries : projectileEntries;
 		StartFrom start = StartFrom.parse(startFromField.getText(), entries);

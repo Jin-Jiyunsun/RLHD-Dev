@@ -15,6 +15,7 @@ import net.runelite.api.events.*;
 import net.runelite.api.hooks.*;
 import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
+import rs117.hd.renderer.zone.RecreatedSceneRenderer;
 import rs117.hd.utils.ModelHash;
 
 /**
@@ -24,6 +25,7 @@ import rs117.hd.utils.ModelHash;
  * 117 HD picks a model override by the object ID in the hash of the tile object it's asked to draw, which for a
  * RuneLiteObject says nothing about which object it shows. So while there are test objects, the client's draw callbacks
  * are wrapped, and test objects are passed on to 117 HD's renderer in a stand-in tile object whose hash has their ID.
+ * The wrapper also draws a recreated scene capture's zones, through {@link RecreatedSceneRenderer}.
  */
 @Slf4j
 @Singleton
@@ -35,6 +37,9 @@ public class TestObjectRenderer {
 
 	@Inject
 	private EventBus eventBus;
+
+	@Inject
+	private RecreatedSceneRenderer recreatedSceneRenderer;
 
 	// Test objects and the object IDs they stand in for. Read while drawing on other threads.
 	private final Map<RuneLiteObject, Integer> testObjects = new ConcurrentHashMap<>();
@@ -98,7 +103,7 @@ public class TestObjectRenderer {
 	@Subscribe
 	public void onBeforeRender(BeforeRender event) {
 		// Only wrap while there's something to draw, and wrap again whenever 117 HD has replaced its renderer
-		if (testObjects.isEmpty()) {
+		if (testObjects.isEmpty() && !recreatedSceneRenderer.hasContent()) {
 			unwrap();
 		} else if (client.getDrawCallbacks() != wrapper) {
 			wrap();
@@ -154,11 +159,32 @@ public class TestObjectRenderer {
 				case "hashCode":
 					return System.identityHashCode(proxy);
 			}
+			Object result;
 			try {
-				return method.invoke(target, args);
+				result = method.invoke(target, args);
 			} catch (InvocationTargetException ex) {
 				throw ex.getCause();
 			}
+			// Draw the recreated scene's zones after 117 HD's, without letting a problem with them stop 117 HD
+			try {
+				switch (method.getName()) {
+					case "drawZoneOpaque":
+						// (projection, scene, zx, zz)
+						recreatedSceneRenderer.afterDrawZoneOpaque((Scene) args[1], (int) args[2], (int) args[3]);
+						break;
+					case "drawZoneAlpha":
+						// (projection, scene, level, zx, zz)
+						recreatedSceneRenderer.afterDrawZoneAlpha((Scene) args[1], (int) args[2], (int) args[3], (int) args[4]);
+						break;
+					case "drawPass":
+						// (projection, scene, pass)
+						recreatedSceneRenderer.afterDrawPass((Scene) args[1], (int) args[2]);
+						break;
+				}
+			} catch (Exception ex) {
+				log.error("Error drawing the recreated scene in {}", method.getName(), ex);
+			}
+			return result;
 		}
 	}
 
