@@ -6,7 +6,6 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.RuneLite;
 import net.runelite.client.RuneLiteProperties;
 import net.runelite.client.externalplugins.ExternalPluginManager;
-import rs117.hd.utils.DeveloperTools;
 import rs117.hd.utils.Props;
 
 /**
@@ -22,10 +21,8 @@ public class DeveloperPluginTest
 			"this window will filter on WARN-level logging by default"
 		);
 
-		String resourcePath = System.getenv("resourcePath");
-
 		Props.DEVELOPMENT = true;
-		Props.set("rlhd.resource-path", resourcePath != null ? resourcePath : "src/main/resources");
+		Props.set("rlhd.resource-path", "src/main/resources");
 		ClassLoader.getSystemClassLoader().setDefaultAssertionStatus(true);
 		useLatestPluginHub();
 		ExternalPluginManager.loadBuiltin(HdPlugin.class, DeveloperPlugin.class);
