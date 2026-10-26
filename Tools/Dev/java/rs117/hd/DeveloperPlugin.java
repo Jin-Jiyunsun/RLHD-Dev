@@ -1,15 +1,18 @@
 package rs117.hd;
 
 import com.google.inject.Provides;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
-import javax.inject.Provider;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.events.ConfigChanged;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.plugins.PluginManager;
+import rs117.hd.dev.spawner.SpawnerTools;
 import rs117.hd.model.ModelExporter;
 import rs117.hd.model.ModelImporter;
 import rs117.hd.utils.Props;
@@ -34,8 +37,15 @@ public class DeveloperPlugin extends Plugin {
 	@Inject
 	private PluginManager pluginManager;
 
+	@Inject
+	private DeveloperConfig config;
+
 	private ModelExporter modelExporter;
 	private ModelImporter modelImporter;
+
+	// From 117 HD's injector, so it works with the running 117 HD's renderer, scene & managers
+	@Nullable
+	private volatile SpawnerTools spawnerTools;
 
 	@Provides
 	DeveloperConfig provideConfig(ConfigManager configManager) {
@@ -57,12 +67,22 @@ public class DeveloperPlugin extends Plugin {
 			modelExporter = injector.getInstance(ModelExporter.class);
 			modelImporter = injector.getInstance(ModelImporter.class);
 
+			var spawner = injector.getInstance(SpawnerTools.class);
+			spawnerTools = spawner;
+			if (config.spawner())
+				spawner.startUp();
+
 			return true;
 		});
 	}
 
 	@Override
 	protected void shutDown() {
+		var spawner = spawnerTools;
+		spawnerTools = null;
+		if (spawner != null)
+			spawner.shutDown();
+
 		clientThread.invoke(() -> {
 			if (modelImporter != null)
 				modelImporter.close();
@@ -71,5 +91,19 @@ public class DeveloperPlugin extends Plugin {
 				modelExporter.close();
 			modelExporter = null;
 		});
+	}
+
+	@Subscribe
+	public void onConfigChanged(ConfigChanged event) {
+		if (!event.getGroup().equals(DeveloperConfig.CONFIG_GROUP) || !event.getKey().equals(DeveloperConfig.KEY_SPAWNER))
+			return;
+		var spawner = spawnerTools;
+		if (spawner == null)
+			return;
+		if (config.spawner()) {
+			spawner.startUp();
+		} else {
+			spawner.shutDown();
+		}
 	}
 }
