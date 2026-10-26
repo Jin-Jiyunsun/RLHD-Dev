@@ -4,10 +4,20 @@ project(':RLHD') {
 
 		rlhd.dependencies.add('testImplementation', rlhd.sourceSets.developer.output)
 
+		// Launch through the developer repo's own copy of HdPluginTest, so RLHD's launcher doesn't need to know about these tools
+		rlhd.tasks.named('run', JavaExec) {
+			classpath = rlhd.sourceSets.developer.runtimeClasspath
+			mainClass = 'rs117.hd.DeveloperPluginTest'
+			workingDir = rlhd.projectDir
+		}
+
+		rlhd.tasks.named('developerJar') {
+			exclude 'rs117/hd/DeveloperPluginTest*'
+		}
+
 		rlhd.tasks.register('runRenderDoc', JavaExec) {
-			dependsOn rlhd.tasks.named('testClasses'), rlhd.tasks.named('developerClasses')
-			classpath = rlhd.sourceSets.test.runtimeClasspath
-			mainClass = 'rs117.hd.HdPluginTest'
+			classpath = rlhd.sourceSets.developer.runtimeClasspath
+			mainClass = 'rs117.hd.DeveloperPluginTest'
 			workingDir = rlhd.projectDir
 			jvmArgs '-ea', '-Xmx768M', '--add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED'
 			args '--developer-mode', '--debug', '--disable-telemetry'
