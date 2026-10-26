@@ -178,6 +178,15 @@ public class SceneTools {
 		}
 
 		@Override
+		public boolean isGapFilled(int sceneX, int sceneY) {
+			var ctx = plugin.getSceneContext();
+			if (ctx == null || !ctx.fillGaps || ctx.currentArea == null || !ctx.currentArea.fillGaps)
+				return false;
+			ctx.sceneToWorld(sceneX, sceneY, 0, worldPos);
+			return ctx.currentArea.containsPoint(worldPos);
+		}
+
+		@Override
 		public boolean isHiddenByOverride(TileObject object, int type) {
 			var ctx = plugin.getSceneContext();
 			if (ctx == null)
@@ -311,6 +320,24 @@ public class SceneTools {
 	}
 
 	/**
+	 * Delete a saved scene capture's file, then call back on the Swing thread
+	 */
+	public void deleteSceneCapture(String fileName, Runnable callback) {
+		if (!developerMode)
+			return;
+		executor.execute(() -> {
+			try {
+				SceneCapture.delete(fileName);
+				postMessage("Deleted the scene capture " + fileName);
+			} catch (IOException ex) {
+				log.error("Failed to delete scene capture {}", fileName, ex);
+				postMessage("Failed to delete the scene capture: " + ex.getMessage());
+			}
+			SwingUtilities.invokeLater(callback);
+		});
+	}
+
+	/**
 	 * Recreate a saved scene capture in the player's region, replacing any previously recreated one
 	 */
 	public void recreateSceneCapture(String fileName) {
@@ -393,23 +420,39 @@ public class SceneTools {
 		if (recreation == null)
 			return;
 
+		// Static objects first, then animated ones once the static scene they're part of has been uploaded and shows
+		boolean placingAnimated = recreation.staticScenePlaced;
+		if (placingAnimated && recreatedSceneRenderer.isUploading())
+			return;
+		var queue = placingAnimated ? recreation.animated : recreation.pending;
 		long deadline = System.nanoTime() + SCENE_RECREATION_NANOS_PER_TICK;
-		while (recreation.next < recreation.pending.size() && System.nanoTime() < deadline) {
-			var pending = recreation.pending.get(recreation.next++);
+		while (recreation.next < queue.size() && System.nanoTime() < deadline) {
+			var pending = queue.get(recreation.next++);
 			try {
-				recreateObject(recreation, pending);
+				if (!recreateObject(recreation, pending, placingAnimated))
+					recreation.animated.add(pending);
 			} catch (RuntimeException ex) {
 				log.warn("Unable to recreate object {}", pending.object.id, ex);
 				recreation.skippedNoModel++;
 			}
 		}
 
-		if (recreation.next < recreation.pending.size())
+		if (recreation.next < queue.size())
 			return;
-		finishSceneRecreation(recreation);
+		recreation.next = 0;
+		if (!placingAnimated) {
+			placeStaticScene(recreation);
+			recreation.staticScenePlaced = true;
+		} else {
+			finishSceneRecreation(recreation);
+		}
 	}
 
-	private void recreateObject(SceneRecreation recreation, PendingScenePart pending) {
+	/**
+	 * Recreate one part of a captured object, or leave it for later and return false if it needs a RuneLiteObject when
+	 * those aren't being placed yet
+	 */
+	private boolean recreateObject(SceneRecreation recreation, PendingScenePart pending, boolean placeAnimated) {
 		var spawner = spawnerTools.get();
 		var captured = pending.object;
 
@@ -417,7 +460,7 @@ public class SceneTools {
 		if (captured.model != null) {
 			if (getSceneTile(pending.location, pending.plane) == null) {
 				recreation.skippedOutsideScene++;
-				return;
+				return true;
 			}
 			recreation.staticObjects.add(new StaticObject(
 				ModelHash.TYPE_OBJECT,
@@ -431,18 +474,18 @@ public class SceneTools {
 				pending.location.getY(),
 				pending.height
 			));
-			return;
+			return true;
 		}
 
 		var def = spawner.readTestObjectDefinition(captured.id);
 		if (def == null) {
 			recreation.skippedUnreadable++;
-			return;
+			return true;
 		}
 		int[] modelIds = SceneCapture.getModelIds(def, pending.part);
 		if (modelIds == null) {
 			recreation.skippedNoModel++;
-			return;
+			return true;
 		}
 		int quarterTurns = pending.part.rotation & 3;
 		Consumer<ModelData> contour = def.contouredGround < 0 || recreation.terrain == null ? null : rotated -> SceneCapture.contour(
@@ -471,7 +514,7 @@ public class SceneTools {
 			);
 			if (model == null) {
 				recreation.skippedNoModel++;
-				return;
+				return true;
 			}
 			recreation.staticObjects.add(new StaticObject(
 				ModelHash.TYPE_OBJECT,
@@ -485,12 +528,14 @@ public class SceneTools {
 				pending.location.getY(),
 				pending.height
 			));
-			return;
+			return true;
 		}
 
+		if (!placeAnimated)
+			return false;
 		if (!pending.location.isInScene()) {
 			recreation.skippedOutsideScene++;
-			return;
+			return true;
 		}
 
 		// The renderer recognises test objects by their exact position, so move each off the spot where the real object
@@ -516,29 +561,40 @@ public class SceneTools {
 		);
 		if (model == null) {
 			recreation.skippedNoModel++;
-			return;
+			return true;
 		}
 		var object = spawner.placeTestObject(captured.id, def, model, location, pending.plane, pending.orientation, pending.height);
 		if (object != null)
 			recreatedSceneObjects.add(object);
+		return true;
 	}
 
-	private void finishSceneRecreation(SceneRecreation recreation) {
-		sceneRecreation = null;
+	/**
+	 * Hand the static objects, floor & gap fillers to the renderer, which uploads them over the next few ticks
+	 */
+	private void placeStaticScene(SceneRecreation recreation) {
+		log.debug("Built {} recreated static objects in {} ms", recreation.staticObjects.size(), (System.nanoTime() - recreation.startedAt) / 1_000_000);
 		recreatedStaticObjects = recreation.staticObjects;
 		recreatedFloor = recreation.floor;
-		recreatedSceneRenderer.set(recreatedStaticObjects, recreatedFloor);
+		recreatedSceneRenderer.set(recreatedStaticObjects, recreatedFloor, recreation.gapFillers);
 		testObjectLights.setStaticObjects(recreatedStaticObjects);
-		if (!recreatedFloor.isEmpty()) {
-			// 117 HD only asks render callbacks about tiles while uploading the scene, so upload it again without them
+		if (!recreatedFloor.isEmpty() || !recreation.gapFillers.isEmpty()) {
+			// 117 HD only asks render callbacks about tiles while uploading the scene, so upload it again without them.
+			// Real tiles where the capture had holes go too, or they'd cover up the black drawn behind everything.
 			Set<Integer> keys = new HashSet<>();
 			for (var tile : recreatedFloor)
+				keys.add(packTile(tile.plane, tile.tileExX, tile.tileExY));
+			for (var tile : recreation.gapFillers)
 				keys.add(packTile(tile.plane, tile.tileExX, tile.tileExY));
 			floorTileKeys = keys;
 			renderCallbackManager.register(hideFloorTiles);
 			reloadScene();
 		}
+	}
 
+	private void finishSceneRecreation(SceneRecreation recreation) {
+		sceneRecreation = null;
+		log.debug("Recreated {} in {} ms", recreation.name, (System.nanoTime() - recreation.startedAt) / 1_000_000);
 		int objects = recreatedSceneObjects.size() + recreatedStaticObjects.size() - recreation.recreatedNpcs;
 		String message = "Recreated " + objects + " objects" +
 						 (recreation.recreatedNpcs == 0 ? "" : ", " + recreation.recreatedNpcs + " NPCs") +
@@ -606,6 +662,21 @@ public class SceneTools {
 				continue;
 			}
 			recreation.floor.add(floorTile);
+		}
+
+		// Captures from before gap fillers were captured have none
+		if (capture.gapFillers == null)
+			return;
+		for (var captured : capture.gapFillers) {
+			int tileExX = (baseX >> Perspective.LOCAL_COORD_BITS) + captured.x + HDUtils.EXTENDED_SCENE_OFFSET;
+			int tileExY = (baseY >> Perspective.LOCAL_COORD_BITS) + captured.y + HDUtils.EXTENDED_SCENE_OFFSET;
+			if (tileExX < 1 || tileExY < 1 || tileExX >= Constants.EXTENDED_SCENE_SIZE - 1 || tileExY >= Constants.EXTENDED_SCENE_SIZE - 1)
+				continue;
+			// Holes don't need a real tile to replace, but take the level of one if it's there, like the floor
+			Tile tile = getExtendedTile(originPlane, tileExX, tileExY);
+			var gapFiller = createFloorTile(captured, tile == null ? originPlane : tile.getRenderLevel(), tileExX, tileExY, groundHeight);
+			if (gapFiller != null)
+				recreation.gapFillers.add(gapFiller);
 		}
 	}
 
@@ -723,6 +794,7 @@ public class SceneTools {
 		if (only == onlyDrawingTestObjects)
 			return;
 		onlyDrawingTestObjects = only;
+		recreatedSceneRenderer.setHidingRealGapFillers(only);
 		if (only) {
 			renderCallbackManager.register(onlyDrawTestObjects);
 		} else {
@@ -853,9 +925,14 @@ public class SceneTools {
 	@RequiredArgsConstructor
 	private static class SceneRecreation {
 		final String name;
+		final long startedAt = System.nanoTime();
 		final List<PendingScenePart> pending = new ArrayList<>();
+		// Animated objects, placed as RuneLiteObjects once the static scene has been uploaded
+		final List<PendingScenePart> animated = new ArrayList<>();
+		boolean staticScenePlaced;
 		final List<StaticObject> staticObjects = new ArrayList<>();
 		final List<FloorTile> floor = new ArrayList<>();
+		final List<FloorTile> gapFillers = new ArrayList<>();
 		int next;
 		int skippedOutsideScene;
 		int skippedUnreadable;

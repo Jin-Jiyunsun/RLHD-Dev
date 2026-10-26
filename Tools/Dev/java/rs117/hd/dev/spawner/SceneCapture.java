@@ -17,6 +17,8 @@ import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import net.runelite.api.*;
+import net.runelite.api.SceneTileModel;
+import net.runelite.api.SceneTilePaint;
 import net.runelite.api.coords.*;
 import rs117.hd.HdPlugin;
 import rs117.hd.dev.Reflection;
@@ -88,6 +90,8 @@ public class SceneCapture {
 		public List<CapturedObject> objects = new ArrayList<>();
 		// The ground's tiles, recreated as a floor in their shapes & colours
 		public List<CapturedTile> tiles = new ArrayList<>();
+		// Holes in the ground level which 117 HD fills in black, kept as tiles with only their shapes
+		public List<CapturedTile> gapFillers = new ArrayList<>();
 		// NPCs, recreated as frozen copies of their models, with no animations or actions
 		public List<CapturedNpc> npcs = new ArrayList<>();
 		// The ground under the objects & tiles, for the floor's shape and objects which bend to follow the ground
@@ -369,6 +373,9 @@ public class SceneCapture {
 		// Whether 117 HD's area hiding hides the tile, while the player is in an area which hides everything outside it
 		boolean isHiddenByArea(Tile tile);
 
+		// Whether 117 HD fills the gaps in the ground at a scene position, which it does in some areas when it's enabled
+		boolean isGapFilled(int sceneX, int sceneY);
+
 		// Whether a model override hides the object, given its ModelHash type
 		boolean isHiddenByOverride(TileObject object, int type);
 
@@ -423,12 +430,7 @@ public class SceneCapture {
 						continue;
 					if (visibility.isHiddenByArea(tile))
 						continue;
-					if (area == Area.REGION && !instanceRegion ?
-						getRegionId(scene, sceneLocation.getX(), sceneLocation.getY()) != originRegion :
-						tileRadius != -1 && (
-							Math.abs(sceneLocation.getX() - origin.getSceneX()) > tileRadius ||
-							Math.abs(sceneLocation.getY() - origin.getSceneY()) > tileRadius
-						))
+					if (!isInArea(scene, area, instanceRegion, originRegion, tileRadius, origin, sceneLocation.getX(), sceneLocation.getY()))
 						continue;
 
 					capturer.captureTile(tile);
@@ -442,9 +444,37 @@ public class SceneCapture {
 				}
 			}
 		}
+		// Gaps are filled on the ground level, including where there are no tiles at all, apart from the scene's edges
+		for (int tileExX = 1; tileExX < tiles[0].length - 1; tileExX++) {
+			for (int tileExY = 1; tileExY < tiles[0][tileExX].length - 1; tileExY++) {
+				int sceneX = tileExX - extendedOffset;
+				int sceneY = tileExY - extendedOffset;
+				if (isInArea(scene, area, instanceRegion, originRegion, tileRadius, origin, sceneX, sceneY) &&
+					visibility.isGapFilled(sceneX, sceneY))
+					capturer.captureGapFiller(tiles[0][tileExX][tileExY], tileExX, tileExY);
+			}
+		}
 		captureNpcs(client, worldView, capture, capturedTiles, cornerX, cornerY, originPlane, groundHeight);
 		capture.terrain = captureTerrain(scene, capture, cornerX, cornerY, groundHeight);
 		return capture;
+	}
+
+	private static boolean isInArea(
+		Scene scene,
+		Area area,
+		boolean instanceRegion,
+		int originRegion,
+		int tileRadius,
+		LocalPoint origin,
+		int sceneX,
+		int sceneY
+	) {
+		if (area == Area.REGION && !instanceRegion)
+			return getRegionId(scene, sceneX, sceneY) == originRegion;
+		return tileRadius == -1 || (
+			Math.abs(sceneX - origin.getSceneX()) <= tileRadius &&
+			Math.abs(sceneY - origin.getSceneY()) <= tileRadius
+		);
 	}
 
 	private static int packTile(int level, int sceneX, int sceneY) {
@@ -615,6 +645,84 @@ public class SceneCapture {
 			captured.underlayId = scene.getUnderlayIds()[level][tileExX][tileExY];
 			captured.overlayId = scene.getOverlayIds()[level][tileExX][tileExY];
 			capture.tiles.add(captured);
+		}
+
+		/**
+		 * Capture the hole in the ground level at a scene position, the same way 117 HD's SceneUploader.processGapTile finds
+		 * it: the whole tile where nothing is painted, or a shaped tile's hidden triangles
+		 */
+		void captureGapFiller(@Nullable Tile tile, int tileExX, int tileExY) {
+			int[][][] tileHeights = scene.getTileHeights();
+			int level = 0;
+			SceneTilePaint paint = null;
+			SceneTileModel model = null;
+			if (tile != null) {
+				level = tile.getRenderLevel();
+				paint = tile.getSceneTilePaint();
+				model = tile.getSceneTileModel();
+				if (model == null) {
+					boolean painted = paint != null && paint.getNeColor() != HDUtils.HIDDEN_HSL;
+					if (!painted && tile.getBridge() != null) {
+						tile = tile.getBridge();
+						level = tile.getRenderLevel();
+						paint = tile.getSceneTilePaint();
+						model = tile.getSceneTileModel();
+						painted = paint != null && paint.getNeColor() != HDUtils.HIDDEN_HSL;
+					}
+					if (painted)
+						return;
+				}
+			}
+
+			List<Integer> vertices = new ArrayList<>();
+			List<Integer> colors = new ArrayList<>();
+			int sceneX = tileExX - HDUtils.EXTENDED_SCENE_OFFSET;
+			int sceneY = tileExY - HDUtils.EXTENDED_SCENE_OFFSET;
+			if (model != null) {
+				int originX = sceneX << Perspective.LOCAL_COORD_BITS;
+				int originY = sceneY << Perspective.LOCAL_COORD_BITS;
+				int[] vertexX = model.getVertexX();
+				int[] vertexY = model.getVertexY();
+				int[] vertexZ = model.getVertexZ();
+				int[][] faces = { model.getFaceX(), model.getFaceY(), model.getFaceZ() };
+				int[] faceColors = model.getTriangleColorA();
+				for (int face = 0; face < faces[0].length; face++) {
+					if (faceColors[face] != HDUtils.HIDDEN_HSL)
+						continue;
+					for (int corner = 0; corner < 3; corner++) {
+						int vertex = faces[corner][face];
+						addCorner(
+							vertices, colors,
+							vertexX[vertex] - originX,
+							vertexY[vertex] - groundHeight,
+							vertexZ[vertex] - originY,
+							0
+						);
+					}
+				}
+			} else {
+				int sw = tileHeights[level][tileExX][tileExY] - groundHeight;
+				int se = tileHeights[level][tileExX + 1][tileExY] - groundHeight;
+				int ne = tileHeights[level][tileExX + 1][tileExY + 1] - groundHeight;
+				int nw = tileHeights[level][tileExX][tileExY + 1] - groundHeight;
+				int size = Perspective.LOCAL_TILE_SIZE;
+				addCorner(vertices, colors, size, ne, size, 0);
+				addCorner(vertices, colors, 0, nw, size, 0);
+				addCorner(vertices, colors, size, se, 0, 0);
+				addCorner(vertices, colors, 0, sw, 0, 0);
+				addCorner(vertices, colors, size, se, 0, 0);
+				addCorner(vertices, colors, 0, nw, size, 0);
+			}
+			if (colors.isEmpty())
+				return;
+
+			var captured = new CapturedTile();
+			captured.x = sceneX - (cornerX >> Perspective.LOCAL_COORD_BITS);
+			captured.y = sceneY - (cornerY >> Perspective.LOCAL_COORD_BITS);
+			captured.plane = level - originPlane;
+			captured.vertices = vertices.stream().mapToInt(Integer::intValue).toArray();
+			captured.colors = colors.stream().mapToInt(Integer::intValue).toArray();
+			capture.gapFillers.add(captured);
 		}
 
 		private static void addCorner(List<Integer> vertices, List<Integer> colors, int x, int height, int y, int color) {
@@ -900,6 +1008,17 @@ public class SceneCapture {
 
 	public static Capture load(Gson gson, String fileName) throws IOException {
 		return CAPTURES_PATH.resolve(fileName).loadJson(gson, Capture.class);
+	}
+
+	/**
+	 * Delete a saved capture, if it's still there
+	 */
+	public static void delete(String fileName) throws IOException {
+		Path path = CAPTURES_PATH.resolve(fileName).toPath();
+		// Only ever delete captures, whatever the name says
+		if (!path.toAbsolutePath().normalize().getParent().equals(CAPTURES_PATH.toPath().toAbsolutePath().normalize()))
+			throw new IOException("Not a scene capture: " + fileName);
+		Files.deleteIfExists(path);
 	}
 
 	/**

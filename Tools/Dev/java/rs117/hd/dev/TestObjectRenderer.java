@@ -101,8 +101,9 @@ public class TestObjectRenderer {
 
 	@Subscribe
 	public void onBeforeRender(BeforeRender event) {
-		// Only wrap while there's something to draw, and wrap again whenever 117 HD has replaced its renderer
-		if (testObjects.isEmpty() && !recreatedSceneRenderer.hasContent()) {
+		// Only wrap while there's something to draw or real gap fillers to hide, and wrap again whenever 117 HD has replaced
+		// its renderer
+		if (testObjects.isEmpty() && !recreatedSceneRenderer.hasContent() && !recreatedSceneRenderer.isHidingRealGapFillers()) {
 			unwrap();
 		} else if (client.getDrawCallbacks() != wrapper) {
 			wrap();
@@ -158,11 +159,19 @@ public class TestObjectRenderer {
 				case "hashCode":
 					return System.identityHashCode(proxy);
 			}
+			boolean drawingZone = method.getName().equals("drawZoneOpaque");
+			if (drawingZone) {
+				// (projection, scene, zx, zz)
+				recreatedSceneRenderer.beforeDrawZoneOpaque((Scene) args[1], (int) args[2], (int) args[3]);
+			}
 			Object result;
 			try {
 				result = method.invoke(target, args);
 			} catch (InvocationTargetException ex) {
 				throw ex.getCause();
+			} finally {
+				if (drawingZone)
+					recreatedSceneRenderer.restoreRealGapFillers();
 			}
 			// Draw the recreated scene's zones after 117 HD's, without letting a problem with them stop 117 HD
 			try {

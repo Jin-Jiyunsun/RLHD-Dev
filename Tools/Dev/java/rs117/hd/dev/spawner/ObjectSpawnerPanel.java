@@ -37,6 +37,7 @@ import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JList;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JSpinner;
@@ -146,6 +147,11 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		}
 	};
 	private final JButton recreateButton = createButton("Recreate scene");
+	private final JButton deleteCaptureButton = createIconButton(
+		createTrashIcon(),
+		"Delete the selected capture's file",
+		this::deleteSelectedSceneCapture
+	);
 	private final JToggleButton onlyTestObjectsButton = new JToggleButton("Hide everything else");
 	private final ResultsModel results = new ResultsModel();
 	private final JList<Entry> resultList = new JList<>(results) {
@@ -443,7 +449,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		sceneCaptureList.setBackground(ColorScheme.DARKER_GRAY_COLOR);
 		sceneCaptureList.setFont(FontManager.getRunescapeSmallFont());
 		sceneCaptureList.setVisibleRowCount(SAVED_CAPTURES_VISIBLE_ROWS);
-		sceneCaptureList.addListSelectionListener(e -> recreateButton.setEnabled(sceneCaptureList.getSelectedValue() != null));
+		sceneCaptureList.addListSelectionListener(e -> updateSceneCaptureButtons());
 		sceneCaptureList.addMouseListener(new MouseAdapter() {
 			@Override
 			public void mouseClicked(MouseEvent e) {
@@ -478,6 +484,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		savedHeader.add(createHeader("Saved captures"));
 		savedHeader.add(Box.createHorizontalStrut(6));
 		savedHeader.add(refreshButton);
+		savedHeader.add(Box.createHorizontalStrut(2));
+		savedHeader.add(deleteCaptureButton);
 		savedPart.add(savedHeader, BorderLayout.NORTH);
 		savedPart.add(sceneCaptureScroll, BorderLayout.CENTER);
 		savedPart.add(recreateButton, BorderLayout.SOUTH);
@@ -503,7 +511,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		parts.add(lowerParts, BorderLayout.CENTER);
 		scenesSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		scenesSection.add(parts, BorderLayout.NORTH);
-		updateSceneCaptures(List.of(), null);
+		updateSceneCaptures(List.of(), null, 0);
 	}
 
 	/**
@@ -515,6 +523,31 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			return;
 		scenes.recreateSceneCapture(selected + ".json");
 		setOnlyDrawTestObjects(true);
+	}
+
+	private void deleteSelectedSceneCapture() {
+		String selected = sceneCaptureList.getSelectedValue();
+		if (selected == null)
+			return;
+		int choice = JOptionPane.showConfirmDialog(
+			this,
+			"Delete the scene capture \"" + selected + "\"? This can't be undone.",
+			"Delete scene capture",
+			JOptionPane.OK_CANCEL_OPTION,
+			JOptionPane.WARNING_MESSAGE
+		);
+		if (choice != JOptionPane.OK_OPTION)
+			return;
+		// Select the next capture along once it's gone
+		int index = sceneCaptureList.getSelectedIndex();
+		sceneCaptureList.clearSelection();
+		scenes.deleteSceneCapture(selected + ".json", () -> refreshSceneCaptures(null, index));
+	}
+
+	private void updateSceneCaptureButtons() {
+		boolean selected = sceneCaptureList.getSelectedValue() != null;
+		recreateButton.setEnabled(selected);
+		deleteCaptureButton.setEnabled(selected);
 	}
 
 	private void setOnlyDrawTestObjects(boolean only) {
@@ -538,19 +571,24 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	private void refreshSceneCaptures(@Nullable String selectFileName) {
-		scenes.listSceneCaptures(fileNames -> updateSceneCaptures(fileNames, selectFileName));
+		refreshSceneCaptures(selectFileName, 0);
 	}
 
-	private void updateSceneCaptures(List<String> fileNames, @Nullable String selectFileName) {
+	private void refreshSceneCaptures(@Nullable String selectFileName, int fallbackIndex) {
+		scenes.listSceneCaptures(fileNames -> updateSceneCaptures(fileNames, selectFileName, fallbackIndex));
+	}
+
+	private void updateSceneCaptures(List<String> fileNames, @Nullable String selectFileName, int fallbackIndex) {
 		String previous = selectFileName != null ? stripJsonExtension(selectFileName) : sceneCaptureList.getSelectedValue();
 		String[] names = fileNames.stream().map(ObjectSpawnerPanel::stripJsonExtension).toArray(String[]::new);
 		sceneCaptureList.setListData(names);
 		if (previous != null) {
 			sceneCaptureList.setSelectedValue(previous, true);
 		} else if (names.length > 0) {
-			sceneCaptureList.setSelectedIndex(0);
+			sceneCaptureList.setSelectedIndex(Math.min(fallbackIndex, names.length - 1));
+			sceneCaptureList.ensureIndexIsVisible(sceneCaptureList.getSelectedIndex());
 		}
-		recreateButton.setEnabled(sceneCaptureList.getSelectedValue() != null);
+		updateSceneCaptureButtons();
 	}
 
 	private static String stripJsonExtension(String fileName) {
@@ -1119,6 +1157,26 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		g.fillRect(4, 6, 4, 2);
 		g.setColor(ColorScheme.LIGHT_GRAY_COLOR);
 		g.fillRect(4, 8, 4, 3);
+		g.dispose();
+		return image;
+	}
+
+	/**
+	 * Draw a red bin with a lid and handle, for deleting files
+	 */
+	private static BufferedImage createTrashIcon() {
+		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = image.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.setColor(ColorScheme.PROGRESS_ERROR_COLOR);
+		g.setStroke(new BasicStroke(1.2f));
+		// Handle & lid
+		g.drawLine(5, 1, 7, 1);
+		g.drawLine(1, 3, 11, 3);
+		// Body, narrowing towards the bottom, with ridges down it
+		g.drawPolygon(new int[] { 2, 10, 9, 3 }, new int[] { 4, 4, 11, 11 }, 4);
+		g.drawLine(5, 6, 5, 9);
+		g.drawLine(7, 6, 7, 9);
 		g.dispose();
 		return image;
 	}
