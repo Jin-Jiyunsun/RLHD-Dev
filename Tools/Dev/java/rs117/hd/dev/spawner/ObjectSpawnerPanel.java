@@ -75,6 +75,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final int SPAWNED_VISIBLE_ROWS = 5;
 	// Taller, since a busy scene's picks pile up
 	private static final int SELECTED_VISIBLE_ROWS = 12;
+	// Room for two digits
+	private static final int SELECTED_NUMBER_WIDTH = 18;
 	private static final int SAVED_CAPTURES_VISIBLE_ROWS = 10;
 	// Room above and below the line dividing sections, the same in every tab
 	private static final int SECTION_GAP = 10;
@@ -550,6 +552,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		text.add(nameLabel);
 		text.add(detailLabel);
 
+		// The number drawn above it in the game, in the same colour
+		JLabel numberLabel = new JLabel(String.valueOf(index + 1), JLabel.CENTER);
+		numberLabel.setFont(FontManager.getRunescapeBoldFont());
+		numberLabel.setForeground(ObjectSelection.OUTLINE_COLOR);
+		numberLabel.setPreferredSize(new Dimension(SELECTED_NUMBER_WIDTH, 0));
+
 		JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
 		buttons.setBackground(background);
 		buttons.add(createIconButton(createRemoveIcon(), "Deselect", () -> selection.remove(selected)));
@@ -558,6 +566,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		row.setBackground(background);
 		row.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 4));
 		row.setPreferredSize(new Dimension(0, SPAWNED_ROW_HEIGHT));
+		row.add(numberLabel, BorderLayout.WEST);
 		row.add(text, BorderLayout.CENTER);
 		row.add(buttons, BorderLayout.EAST);
 
@@ -570,7 +579,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 					copyToClipboard(selected.gameval != null ? '"' + selected.gameval + '"' : String.valueOf(selected.id));
 			}
 		};
-		for (JComponent component : new JComponent[] { row, text, nameLabel, detailLabel }) {
+		for (JComponent component : new JComponent[] { row, numberLabel, text, nameLabel, detailLabel }) {
 			component.setToolTipText(tooltip);
 			component.addMouseListener(copy);
 		}

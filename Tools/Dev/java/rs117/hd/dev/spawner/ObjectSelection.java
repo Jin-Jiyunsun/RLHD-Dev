@@ -26,10 +26,12 @@ import net.runelite.client.eventbus.EventBus;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.input.MouseAdapter;
 import net.runelite.client.input.MouseManager;
+import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.overlay.Overlay;
 import net.runelite.client.ui.overlay.OverlayLayer;
 import net.runelite.client.ui.overlay.OverlayManager;
 import net.runelite.client.ui.overlay.OverlayPosition;
+import net.runelite.client.ui.overlay.OverlayUtil;
 import net.runelite.client.ui.overlay.outline.ModelOutlineRenderer;
 import rs117.hd.dev.TestObjectRenderer;
 import rs117.hd.renderer.zone.RecreatedSceneRenderer.StaticObject;
@@ -44,10 +46,13 @@ import rs117.hd.utils.ModelHash;
 @Slf4j
 @Singleton
 public class ObjectSelection extends Overlay {
-	private static final Color OUTLINE_COLOR = new Color(0x00E0FF);
+	// Also the sidebar's numbers, to match them up
+	static final Color OUTLINE_COLOR = new Color(0x00E0FF);
 	private static final int OUTLINE_WIDTH = 2;
 	private static final int OUTLINE_FEATHER = 2;
 	private static final BasicStroke CLICKBOX_STROKE = new BasicStroke(OUTLINE_WIDTH);
+	// Pixels between the top of a selected object & its number
+	private static final int NUMBER_GAP = 6;
 
 	@Inject
 	private Client client;
@@ -358,9 +363,16 @@ public class ObjectSelection extends Overlay {
 		var worldView = client.getTopLevelWorldView();
 		if (worldView == null)
 			return null;
+		graphics.setFont(FontManager.getRunescapeBoldFont());
+		int number = 0;
 		for (var object : selected) {
+			number++;
 			if (object.testObject != null) {
-				outlineRenderer.drawOutline(object.testObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
+				var t = object.testObject;
+				var location = t.getLocation();
+				outlineRenderer.drawOutline(t, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
+				if (location != null && t.getModel() != null)
+					drawNumber(graphics, number, worldView, t.getModel(), t.getOrientation(), location.getX(), location.getY(), t.getZ());
 			} else if (object.staticObject != null && object.staticObject.model != null) {
 				// The hull of its vertices, since the model outline isn't public for loose models
 				var s = object.staticObject;
@@ -370,9 +382,28 @@ public class ObjectSelection extends Overlay {
 					graphics.setStroke(CLICKBOX_STROKE);
 					graphics.draw(hull);
 				}
+				drawNumber(graphics, number, worldView, s.model, s.orientation, s.x, s.y, s.height);
 			}
 		}
 		return null;
+	}
+
+	/** Its number in the sidebar, centred just above the highest point of it on screen, clear of the outline */
+	private void drawNumber(Graphics2D graphics, int number, WorldView worldView, Model model, int orientation, int x, int y, int z) {
+		int vertices = projectVertices(worldView, model, orientation, x, y, z);
+		int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, minY = Integer.MAX_VALUE;
+		for (int i = 0; i < vertices; i++) {
+			if (screenX[i] == Integer.MIN_VALUE)
+				continue;
+			minX = Math.min(minX, screenX[i]);
+			maxX = Math.max(maxX, screenX[i]);
+			minY = Math.min(minY, screenY[i]);
+		}
+		if (minY == Integer.MAX_VALUE)
+			return;
+		String text = String.valueOf(number);
+		var location = new net.runelite.api.Point((minX + maxX) / 2 - graphics.getFontMetrics().stringWidth(text) / 2, minY - NUMBER_GAP);
+		OverlayUtil.renderTextLocation(graphics, location, text, OUTLINE_COLOR);
 	}
 
 	@Nullable
