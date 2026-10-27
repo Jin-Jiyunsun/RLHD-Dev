@@ -226,6 +226,11 @@ public class SceneTools {
 			SwingUtilities.invokeLater(() -> panel.showOnlyDrawingTestObjects(false));
 	}
 
+	/** The recreated scene's static objects & NPCs. Client thread only. */
+	List<StaticObject> getRecreatedStaticObjects() {
+		return recreatedStaticObjects;
+	}
+
 	public boolean hasRecreatedScene() {
 		return sceneRecreation != null || !recreatedSceneObjects.isEmpty() || recreatedSceneRenderer.hasContent();
 	}

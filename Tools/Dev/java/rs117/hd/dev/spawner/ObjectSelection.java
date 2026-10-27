@@ -1,12 +1,11 @@
 package rs117.hd.dev.spawner;
 
+import java.awt.BasicStroke;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Shape;
 import java.awt.event.MouseEvent;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -15,7 +14,6 @@ import javax.inject.Inject;
 import javax.inject.Provider;
 import javax.inject.Singleton;
 import javax.swing.SwingUtilities;
-import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.*;
 import net.runelite.api.events.*;
 import net.runelite.client.callback.ClientThread;
@@ -33,24 +31,17 @@ import rs117.hd.renderer.zone.RecreatedSceneRenderer.StaticObject;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.utils.ModelHash;
 
-import static rs117.hd.dev.Reflection.method;
-
 /**
  * Right-clicking a spawned or recreated object selects it for the sidebar, outlined like Object Markers does. Clicks are
- * only watched and passed on unchanged, so the game's menu & clickboxes work exactly as without it.
+ * only watched and passed on unchanged, so the game's menu & clickboxes work exactly as without it. Nothing is consumed,
+ * no menu entries are added and nothing is sent to the server: it only reads the mouse position and draws on top.
  */
-@Slf4j
 @Singleton
 public class ObjectSelection extends Overlay {
 	private static final Color OUTLINE_COLOR = new Color(0x00E0FF);
 	private static final int OUTLINE_WIDTH = 2;
 	private static final int OUTLINE_FEATHER = 2;
-	// The outline Object Markers draws for game objects, for models which aren't tile objects
-	private static final Method DRAW_MODEL_OUTLINE = method(
-		ModelOutlineRenderer.class,
-		"drawModelOutline",
-		WorldView.class, Model.class, int.class, int.class, int.class, int.class, int.class, Color.class, int.class
-	);
+	private static final BasicStroke CLICKBOX_STROKE = new BasicStroke(OUTLINE_WIDTH);
 
 	@Inject
 	private Client client;
@@ -110,11 +101,12 @@ public class ObjectSelection extends Overlay {
 	private final MouseAdapter rightClicks = new MouseAdapter() {
 		@Override
 		public MouseEvent mousePressed(MouseEvent event) {
-			// Only watched, never consumed or changed, so the game still opens its menu
+			// Only watched, never consumed or changed, so the game still opens its menu. Already in canvas space, even when
+			// stretched, and read now since the client hasn't seen this press yet.
 			if (SwingUtilities.isRightMouseButton(event)) {
-				var mouse = client.getMouseCanvasPosition();
-				if (mouse != null)
-					clientThread.invoke(() -> select(mouse.getX(), mouse.getY()));
+				int mouseX = event.getX();
+				int mouseY = event.getY();
+				clientThread.invokeLater(() -> select(mouseX, mouseY));
 			}
 			return event;
 		}
@@ -278,12 +270,13 @@ public class ObjectSelection extends Overlay {
 			if (object.testObject != null) {
 				outlineRenderer.drawOutline(object.testObject, OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
 			} else if (object.staticObject != null) {
+				// Its clickbox, the same shape it's picked by, since the model outline isn't public for loose models
 				var s = object.staticObject;
-				try {
-					DRAW_MODEL_OUTLINE.invoke(outlineRenderer, worldView, s.model, s.x, s.y, s.height, s.orientation,
-						OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
-				} catch (IllegalAccessException | InvocationTargetException ex) {
-					log.debug("Unable to outline recreated object {}", s.id, ex);
+				Shape clickbox = Perspective.getClickbox(client, worldView, s.model, s.orientation, s.x, s.y, s.height);
+				if (clickbox != null) {
+					graphics.setColor(OUTLINE_COLOR);
+					graphics.setStroke(CLICKBOX_STROKE);
+					graphics.draw(clickbox);
 				}
 			}
 		}

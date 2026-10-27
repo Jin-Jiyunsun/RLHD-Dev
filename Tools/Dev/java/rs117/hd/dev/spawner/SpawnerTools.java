@@ -99,6 +99,9 @@ public class SpawnerTools {
 	@Inject
 	private SceneTools sceneTools;
 
+	@Inject
+	private ObjectSelection objectSelection;
+
 	private boolean started;
 
 	private int testSpotanimId = -1;
@@ -158,10 +161,11 @@ public class SpawnerTools {
 					.icon(ObjectSpawnerPanel.createIcon())
 					// Right below RuneLite's configuration button
 					.priority(1)
-					.panel(objectSpawnerPanel = new ObjectSpawnerPanel(this, sceneTools))
+					.panel(objectSpawnerPanel = new ObjectSpawnerPanel(this, sceneTools, objectSelection))
 					.build();
 				clientToolbar.addNavigation(objectSpawnerButton);
 			});
+			objectSelection.startUp();
 		}
 	}
 
@@ -170,6 +174,7 @@ public class SpawnerTools {
 			return;
 		started = false;
 		eventBus.unregister(this);
+		objectSelection.shutDown();
 		SwingUtilities.invokeLater(() -> {
 			if (objectSpawnerButton != null) {
 				clientToolbar.removeNavigation(objectSpawnerButton);

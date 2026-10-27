@@ -36,6 +36,7 @@ import javax.swing.Box;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JList;
 import javax.swing.JOptionPane;
@@ -58,6 +59,7 @@ import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.ui.components.IconTextField;
+import rs117.hd.utils.ModelHash;
 
 /** Sidebar for spawning objects, spotanims & projectiles, and capturing & recreating scenes, purely visually. */
 public class ObjectSpawnerPanel extends PluginPanel {
@@ -110,6 +112,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 	private final SpawnerTools spawner;
 	private final SceneTools scenes;
+	private final ObjectSelection selection;
 	private final JButton[] modeButtons = new JButton[Mode.values().length];
 	private final IconTextField searchBar = new IconTextField();
 	private final JToggleButton lightsFilterButton = new JToggleButton(new ImageIcon(createLightbulbIcon(FILTER_ICON_SIZE)));
@@ -136,6 +139,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JPanel listSection = new JPanel(new BorderLayout(0, 4));
 	private final JPanel scenesSection = new JPanel(new BorderLayout(0, 6));
 	private final JPanel recreatedSceneColumn = new JPanel(new GridLayout(0, 1, 0, 4));
+	private final JPanel selectedRows = new SpawnedRowsPanel();
 	private final JTextField sceneNameField = new JTextField();
 	private final JList<String> sceneCaptureList = new JList<>() {
 		// Cut long names off rather than widening the sidebar
@@ -185,10 +189,11 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private boolean loop = true;
 	private boolean frameTimings;
 
-	public ObjectSpawnerPanel(SpawnerTools spawner, SceneTools scenes) {
+	public ObjectSpawnerPanel(SpawnerTools spawner, SceneTools scenes, ObjectSelection selection) {
 		super(false);
 		this.spawner = spawner;
 		this.scenes = scenes;
+		this.selection = selection;
 
 		setLayout(new BorderLayout(0, 6));
 		setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
@@ -375,6 +380,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		createScenesSection();
 
 		setSpawnedObjects(List.of());
+		setSelectedObjects(List.of());
 		setFilter(Filter.ALL);
 		setMode(Mode.OBJECTS);
 	}
@@ -470,6 +476,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		JPanel recreatedPart = createPanel(new BorderLayout(0, 4));
 		recreatedPart.add(recreatedSceneColumn, BorderLayout.NORTH);
 		recreatedPart.add(recreateInfo, BorderLayout.CENTER);
+		recreatedPart.add(createSelectedPart(), BorderLayout.SOUTH);
 
 		JPanel lowerParts = createPanel(new BorderLayout(0, 6));
 		lowerParts.add(savedPart, BorderLayout.NORTH);
@@ -480,6 +487,92 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		scenesSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		scenesSection.add(parts, BorderLayout.NORTH);
 		updateSceneCaptures(List.of(), null, 0);
+	}
+
+	/** The box listing objects right-clicked in the game, like the spawned objects box */
+	private JPanel createSelectedPart() {
+		selectedRows.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JScrollPane selectedScroll = createVerticalScroll(selectedRows);
+		selectedScroll.setBorder(BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR));
+		selectedScroll.getViewport().setBackground(ColorScheme.DARK_GRAY_COLOR);
+		selectedScroll.getVerticalScrollBar().setUnitIncrement(SPAWNED_ROW_HEIGHT);
+		selectedScroll.setPreferredSize(new Dimension(0, SPAWNED_VISIBLE_ROWS * SPAWNED_ROW_HEIGHT + 2));
+
+		JButton clearSelectionButton = createButton("Clear selection");
+		clearSelectionButton.addActionListener(e -> selection.clear());
+
+		JTextArea selectedInfo = createWrappingText();
+		selectedInfo.setText("Right-click a spawned or recreated object to list it here. The game's menu still opens as " +
+							 "normal. Click a row to copy its gameval, or its ID if it has none.");
+
+		JPanel selectedBottom = createPanel(new BorderLayout(0, 4));
+		selectedBottom.add(clearSelectionButton, BorderLayout.NORTH);
+		selectedBottom.add(selectedInfo, BorderLayout.CENTER);
+		JPanel selectedPart = createPanel(new BorderLayout(0, 4));
+		selectedPart.setBorder(BorderFactory.createEmptyBorder(SECTION_GAP, 0, 0, 0));
+		selectedPart.add(createHeader("Selected objects"), BorderLayout.NORTH);
+		selectedPart.add(selectedScroll, BorderLayout.CENTER);
+		selectedPart.add(selectedBottom, BorderLayout.SOUTH);
+		return selectedPart;
+	}
+
+	/** Show the right-clicked objects, with their gameval & ID. Swing thread only. */
+	public void setSelectedObjects(List<ObjectSelection.Selected> selectedObjects) {
+		selectedRows.removeAll();
+		if (selectedObjects.isEmpty()) {
+			JLabel emptyLabel = new JLabel("Nothing selected yet", JLabel.CENTER);
+			emptyLabel.setFont(FontManager.getRunescapeSmallFont());
+			emptyLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+			emptyLabel.setPreferredSize(new Dimension(0, SPAWNED_ROW_HEIGHT));
+			selectedRows.add(emptyLabel);
+		}
+		for (int i = 0; i < selectedObjects.size(); i++)
+			selectedRows.add(createSelectedRow(selectedObjects.get(i), i));
+		selectedRows.revalidate();
+		selectedRows.repaint();
+	}
+
+	private JPanel createSelectedRow(ObjectSelection.Selected selected, int index) {
+		Color background = index % 2 == 0 ? ColorScheme.DARKER_GRAY_COLOR : ColorScheme.DARK_GRAY_COLOR;
+		String kind = selected.type == ModelHash.TYPE_NPC ? "NPC" : "Object";
+
+		JLabel nameLabel = new JLabel(selected.gameval != null ? selected.gameval : "No gameval");
+		nameLabel.setFont(FontManager.getRunescapeSmallFont());
+		nameLabel.setForeground(selected.gameval != null ? Color.WHITE : ColorScheme.LIGHT_GRAY_COLOR);
+		JLabel detailLabel = new JLabel(kind + " " + selected.id);
+		detailLabel.setFont(FontManager.getRunescapeSmallFont());
+		detailLabel.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+
+		JPanel text = new JPanel(new GridLayout(0, 1));
+		text.setBackground(background);
+		text.add(nameLabel);
+		text.add(detailLabel);
+
+		JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
+		buttons.setBackground(background);
+		buttons.add(createIconButton(createRemoveIcon(), "Deselect", () -> selection.remove(selected)));
+
+		JPanel row = new JPanel(new BorderLayout(4, 0));
+		row.setBackground(background);
+		row.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 4));
+		row.setPreferredSize(new Dimension(0, SPAWNED_ROW_HEIGHT));
+		row.add(text, BorderLayout.CENTER);
+		row.add(buttons, BorderLayout.EAST);
+
+		// Ready to paste into a JSON config, like the list's right-click
+		String tooltip = kind + " " + selected.id + (selected.gameval != null ? ": " + selected.gameval : "") + ". Click to copy.";
+		MouseAdapter copy = new MouseAdapter() {
+			@Override
+			public void mouseClicked(MouseEvent e) {
+				if (SwingUtilities.isLeftMouseButton(e))
+					copyToClipboard(selected.gameval != null ? '"' + selected.gameval + '"' : String.valueOf(selected.id));
+			}
+		};
+		for (JComponent component : new JComponent[] { row, text, nameLabel, detailLabel }) {
+			component.setToolTipText(tooltip);
+			component.addMouseListener(copy);
+		}
+		return row;
 	}
 
 	/** Recreate the selected capture, hiding everything else to see it on its own */
