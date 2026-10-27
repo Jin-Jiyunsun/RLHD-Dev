@@ -505,7 +505,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 		JTextArea selectedInfo = createWrappingText();
 		selectedInfo.setText("Right-click a spawned or recreated object to list it here. The game's menu still opens as " +
-							 "normal. Click a row to copy its gameval, or its ID if it has none.");
+							 "normal. Right-click a row to copy its gameval, or its ID if it has none.");
 
 		JPanel selectedBottom = createPanel(new BorderLayout(0, 4));
 		selectedBottom.add(clearSelectionButton, BorderLayout.NORTH);
@@ -561,12 +561,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		row.add(text, BorderLayout.CENTER);
 		row.add(buttons, BorderLayout.EAST);
 
-		// Ready to paste into a JSON config, like the list's right-click
-		String tooltip = kind + " " + selected.id + (selected.gameval != null ? ": " + selected.gameval : "") + ". Click to copy.";
+		// Ready to paste into a JSON config, the same as the list's & the tile info overlay's right-click
+		String tooltip = kind + " " + selected.id + (selected.gameval != null ? ": " + selected.gameval : "") + ". Right-click to copy.";
 		MouseAdapter copy = new MouseAdapter() {
 			@Override
 			public void mouseClicked(MouseEvent e) {
-				if (SwingUtilities.isLeftMouseButton(e))
+				if (SwingUtilities.isRightMouseButton(e))
 					copyToClipboard(selected.gameval != null ? '"' + selected.gameval + '"' : String.valueOf(selected.id));
 			}
 		};
