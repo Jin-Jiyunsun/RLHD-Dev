@@ -5,14 +5,11 @@ import java.nio.ByteBuffer;
 import javax.annotation.Nullable;
 import lombok.extern.slf4j.Slf4j;
 
-/**
- * Developer tools: decodes an object definition from the client's cache data, since RuneLite's API doesn't expose
- * the models, animation and model changes the spawner needs to rebuild an object.
- */
+/** Decodes object definitions from the cache, since RuneLite's API doesn't expose their models & model changes */
 @Slf4j
 public class ObjectDefinitionParser {
 	private static final int OBJECT_TYPE_CENTREPIECE = 10;
-	// Windows-1252 characters for bytes 128-159, which Jagex strings use instead of Latin-1's control characters
+	// Windows-1252 characters for bytes 128-159, which Jagex strings use
 	private static final char[] CP1252_HIGH = {
 		'€', '?', '‚', 'ƒ', '„', '…', '†', '‡',
 		'ˆ', '‰', 'Š', '‹', 'Œ', '?', 'Ž', '?',
@@ -20,10 +17,7 @@ public class ObjectDefinitionParser {
 		'˜', '™', 'š', '›', 'œ', '?', 'ž', 'Ÿ'
 	};
 
-	/**
-	 * Decode the definition, returning null if it has no models or contains something this parser doesn't understand,
-	 * such as a field added by a game update.
-	 */
+	/** Null if it has no models or something unknown, such as a field from a game update */
 	@Nullable
 	public static TestObjectDefinition parse(int id, byte[] data) {
 		var def = new TestObjectDefinition();
@@ -127,7 +121,7 @@ public class ObjectDefinitionParser {
 						def.contouredGround = (in.get() & 0xFF) * 256;
 						break;
 
-					// Everything below doesn't affect how the object looks, so it's only read past
+					// The rest doesn't affect how it looks
 					case 17:
 					case 18:
 					case 22:
@@ -259,7 +253,7 @@ public class ObjectDefinitionParser {
 		if (models == null || models.length == 0)
 			return null;
 
-		// Objects with model types have one model per placement type, so prefer the regular centrepiece model
+		// Prefer the regular centrepiece model
 		def.models = models;
 		def.allModels = models;
 		def.modelTypes = types;
@@ -281,9 +275,7 @@ public class ObjectDefinitionParser {
 		return def;
 	}
 
-	/**
-	 * Read a zero-terminated string, encoded as Windows-1252
-	 */
+	/** A zero-terminated Windows-1252 string */
 	private static String readString(ByteBuffer in) {
 		StringBuilder sb = new StringBuilder();
 		int b;

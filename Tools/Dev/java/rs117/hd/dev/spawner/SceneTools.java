@@ -41,14 +41,11 @@ import rs117.hd.utils.ModelHash;
 
 import static rs117.hd.utils.MathUtils.*;
 
-/**
- * Saves the objects, NPCs and ground the game draws around the player to a file, and recreates saved captures in the
- * player's region, for tuning a scene's textures & lights somewhere else. Driven by the Scenes tab of the spawner sidebar.
- */
+/** Captures scenes to files and recreates them in the player's region, for tuning textures & lights elsewhere */
 @Slf4j
 @Singleton
 public class SceneTools {
-	// Spread recreating a scene capture's objects over ticks, since a whole scene can hold thousands
+	// A whole scene can hold thousands of objects
 	private static final long SCENE_RECREATION_NANOS_PER_TICK = 4_000_000;
 
 	@Inject
@@ -97,32 +94,29 @@ public class SceneTools {
 	@Inject
 	private Provider<SpawnerTools> spawnerTools;
 
-	// Animated objects recreated from a scene capture, which need RuneLiteObjects. Everything else is uploaded like static
-	// scenery by the RecreatedSceneRenderer.
+	// Animated objects need RuneLiteObjects, while everything else is uploaded by the RecreatedSceneRenderer
 	private final List<RuneLiteObject> recreatedSceneObjects = new ArrayList<>();
 	private List<StaticObject> recreatedStaticObjects = List.of();
 	private List<FloorTile> recreatedFloor = List.of();
-	// Real tiles under the recreated floor, by level & extended scene position, which aren't drawn while it's there
+	// Real tiles under the recreated floor, which aren't drawn
 	private Set<Integer> floorTileKeys = Set.of();
 	@Nullable
 	private SceneRecreation sceneRecreation;
 	private boolean onlyDrawingTestObjects;
 
-	// The environments.json environment a recreated scene is lit by, and the area & instant transition it had before being
-	// made to cover everything and switch to and from instantly
+	// The recreated scene's environment, and its area & transition before being made to cover everything instantly
 	@Nullable
 	private String overrideEnvironmentName;
 	@Nullable
 	private Environment overriddenEnvironment;
 	private Area overriddenEnvironmentArea;
 	private boolean overriddenEnvironmentInstant;
-	// The environment just stopped overriding, which keeps switching instantly until 117 HD has switched away from it
+	// Keeps switching instantly until 117 HD has switched away from it
 	@Nullable
 	private Environment leavingEnvironment;
 	private boolean leavingEnvironmentInstant;
 
-	// Stop drawing everything but test objects, the same way the Blindfold plugin hides things. It only affects drawing,
-	// leaving clickboxes, menus and everything else alone.
+	// Only draw test objects, like the Blindfold plugin, leaving clickboxes & menus alone
 	private final RenderCallback onlyDrawTestObjects = new RenderCallback() {
 		@Override
 		public boolean drawTile(Scene scene, Tile tile) {
@@ -133,11 +127,11 @@ public class SceneTools {
 		public boolean drawObject(Scene scene, TileObject object) {
 			if (!(object instanceof GameObject))
 				return false;
-			// Keep the local player, but nobody else, like the Blindfold plugin does
+			// Keep the local player
 			var renderable = ((GameObject) object).getRenderable();
 			if (renderable != null && renderable == client.getLocalPlayer())
 				return true;
-			// Test objects are drawn wrapped in a temporary game object, which the renderer matches by its position
+			// Test objects are drawn in a temporary game object, matched by position
 			return testObjectRenderer.getTestObjectId(renderable, object.getX(), object.getY()) != -1;
 		}
 	};
@@ -149,7 +143,7 @@ public class SceneTools {
 			if (floorTileKeys.isEmpty() || scene.getWorldViewId() != WorldView.TOPLEVEL)
 				return true;
 			var sceneLocation = tile.getSceneLocation();
-			return !floorTileKeys.contains(packTile(
+			return !floorTileKeys.contains(RecreatedSceneRenderer.packTile(
 				tile.getRenderLevel(),
 				sceneLocation.getX() + HDUtils.EXTENDED_SCENE_OFFSET,
 				sceneLocation.getY() + HDUtils.EXTENDED_SCENE_OFFSET
@@ -157,7 +151,7 @@ public class SceneTools {
 		}
 	};
 
-	// Leaves what the game and 117 HD aren't drawing out of scene captures, checked the same way 117 HD's SceneUploader does
+	// Checked like 117 HD's SceneUploader
 	private final SceneCapture.Visibility sceneVisibility = new SceneCapture.Visibility() {
 		private final int[] worldPos = new int[3];
 
@@ -215,21 +209,16 @@ public class SceneTools {
 		eventBus.register(this);
 	}
 
-	/**
-	 * Must be called on the client thread
-	 */
+	/** Must be called on the client thread */
 	public void shutDown() {
 		eventBus.unregister(this);
-		// Stop hiding the scene first, since the render callbacks would otherwise keep hiding it
 		stopHiding();
 		removeRecreatedScene();
-		// Nothing will check when 117 HD switches away from it once stopped, so give it back its own transition now
+		// Nothing will check once stopped
 		finishLeavingEnvironment();
 	}
 
-	/**
-	 * Show everything again. Must be called on the client thread.
-	 */
+	/** Show everything again. Client thread only. */
 	void stopHiding() {
 		setOnlyDrawingTestObjects(false);
 		var panel = spawnerTools.get().getPanel();
@@ -250,10 +239,7 @@ public class SceneTools {
 			hideUndrawnObjectLights();
 	}
 
-	/**
-	 * Capture the objects, NPCs and ground the game draws in an area around the player, and save them to a file.
-	 * Can be called from any thread.
-	 */
+	/** Capture what's drawn around the player to a file. Any thread. */
 	public void captureScene(String name, SceneCapture.Area area) {
 		clientThread.invoke(() -> {
 			if (!developerMode)
@@ -283,9 +269,7 @@ public class SceneTools {
 		});
 	}
 
-	/**
-	 * The name of the 117 HD environment the player is in, like the tile info overlay shows, or null if there's none
-	 */
+	/** The player's environment, like the tile info overlay shows, or null */
 	@Nullable
 	private String getPlayerEnvironmentName() {
 		var ctx = plugin.getSceneContext();
@@ -300,9 +284,7 @@ public class SceneTools {
 		return null;
 	}
 
-	/**
-	 * Pass the file names of the saved scene captures to the callback on the Swing thread
-	 */
+	/** Pass the saved captures' file names to the callback on the Swing thread */
 	public void listSceneCaptures(Consumer<List<String>> callback) {
 		if (!developerMode)
 			return;
@@ -319,9 +301,7 @@ public class SceneTools {
 		});
 	}
 
-	/**
-	 * Delete a saved scene capture's file, then call back on the Swing thread
-	 */
+	/** Delete a saved scene capture's file, then call back on the Swing thread */
 	public void deleteSceneCapture(String fileName, Runnable callback) {
 		if (!developerMode)
 			return;
@@ -337,9 +317,7 @@ public class SceneTools {
 		});
 	}
 
-	/**
-	 * Recreate a saved scene capture in the player's region, replacing any previously recreated one
-	 */
+	/** Recreate a saved capture in the player's region, replacing any earlier one */
 	public void recreateSceneCapture(String fileName) {
 		if (!developerMode)
 			return;
@@ -367,17 +345,15 @@ public class SceneTools {
 			return;
 		}
 		removeRecreatedScene();
-		// Light the recreated scene like where it was captured, until it's removed
 		overrideEnvironmentName = capture.environment;
 
-		// Work out where everything goes now, so moving while it spawns doesn't move the rest
+		// Now, so moving while it spawns doesn't move the rest
 		LocalPoint origin = player.getLocalLocation();
 		int originPlane = worldView.getPlane();
 		int groundHeight = Perspective.getTileHeight(client, origin, originPlane);
 		var recreation = new SceneRecreation(capture.name == null ? "the scene capture" : capture.name);
 		recreation.terrain = capture.terrain;
 		recreation.capturedPlane = capture.capturedAt == null ? 0 : capture.capturedAt.getPlane();
-		// Line everything up with the region grid like where it was captured
 		var scene = worldView.getScene();
 		int baseX = SceneCapture.getRegionCorner(scene.getBaseX(), origin.getX());
 		int baseY = SceneCapture.getRegionCorner(scene.getBaseY(), origin.getY());
@@ -389,15 +365,14 @@ public class SceneTools {
 			for (var part : SceneCapture.getParts(object)) {
 				int x = baseX + object.x + (part.offset ? object.xOffset : 0);
 				int y = baseY + object.y + (part.offset ? object.yOffset : 0);
-				// Static objects can go in the extended area 117 HD loads around the scene, unlike RuneLiteObjects
+				// Static objects can go in 117 HD's extended scene, unlike RuneLiteObjects
 				var location = new LocalPoint(x, y, worldView);
 				if (getSceneTile(location, originPlane) == null && !location.isInScene()) {
 					recreation.skippedOutsideScene++;
 					continue;
 				}
 				int orientation = mod((part.rotation & 3) * 512 + object.modelOrientation, 2048);
-				// Everything goes on the player's plane, since the captured heights already keep objects on other planes
-				// where they were, and the player's plane isn't hidden like the planes above it can be
+				// Everything on the player's plane, which isn't hidden, since heights keep other planes in place
 				int height = groundHeight + object.height;
 				recreation.pending.add(new PendingScenePart(object, part, location, originPlane, orientation, height));
 			}
@@ -405,7 +380,7 @@ public class SceneTools {
 		recreateFloor(capture, baseX, baseY, originPlane, groundHeight, recreation);
 		recreateNpcs(capture, baseX, baseY, originPlane, groundHeight, recreation);
 
-		// Big captures take a while, so start with what's around the player rather than the scene's edge
+		// Nearest first
 		recreation.pending.sort(Comparator.comparingLong(pending -> {
 			long dx = pending.location.getX() - origin.getX();
 			long dy = pending.location.getY() - origin.getY();
@@ -420,7 +395,7 @@ public class SceneTools {
 		if (recreation == null)
 			return;
 
-		// Static objects first, then animated ones once the static scene they're part of has been uploaded and shows
+		// Static objects first, then animated ones once the static scene shows
 		boolean placingAnimated = recreation.staticScenePlaced;
 		if (placingAnimated && recreatedSceneRenderer.isUploading())
 			return;
@@ -448,32 +423,18 @@ public class SceneTools {
 		}
 	}
 
-	/**
-	 * Recreate one part of a captured object, or leave it for later and return false if it needs a RuneLiteObject when
-	 * those aren't being placed yet
-	 */
+	/** Recreate part of an object, or return false to leave it for later if it needs a RuneLiteObject */
 	private boolean recreateObject(SceneRecreation recreation, PendingScenePart pending, boolean placeAnimated) {
 		var spawner = spawnerTools.get();
 		var captured = pending.object;
 
-		// Use the model the client drew where the capture kept one, since it's already rotated and bent like the original
+		// The model the client drew, already rotated & bent
 		if (captured.model != null) {
 			if (getSceneTile(pending.location, pending.plane) == null) {
 				recreation.skippedOutsideScene++;
 				return true;
 			}
-			recreation.staticObjects.add(new StaticObject(
-				ModelHash.TYPE_OBJECT,
-				captured.id,
-				captured.model.toModel(),
-				HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
-				captured.modelOrientation,
-				mod(1024 + pending.orientation, 2048),
-				pending.plane,
-				pending.location.getX(),
-				pending.location.getY(),
-				pending.height
-			));
+			addStaticObject(recreation, pending, captured.model.toModel());
 			return true;
 		}
 
@@ -498,8 +459,7 @@ public class SceneTools {
 			captured.height
 		);
 
-		// Upload objects like static scenery where possible, so they're not redrawn every frame. Animations need
-		// RuneLiteObjects though, as do objects without a tile to be uploaded with.
+		// Static scenery where possible, but animations & objects without a tile need RuneLiteObjects
 		Tile tile = def.animation == -1 ? getSceneTile(pending.location, pending.plane) : null;
 		if (tile != null) {
 			Model model = spawner.buildTestObjectModel(
@@ -507,7 +467,7 @@ public class SceneTools {
 				modelIds,
 				def.mirrored != pending.part.isMirrored(),
 				pending.part.isDiagonal(),
-				// Kept rotated like the client's, since static scenery isn't rotated again when drawn
+				// Static scenery isn't rotated when drawn
 				modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, 0, true),
 				0,
 				false
@@ -516,18 +476,7 @@ public class SceneTools {
 				recreation.skippedNoModel++;
 				return true;
 			}
-			recreation.staticObjects.add(new StaticObject(
-				ModelHash.TYPE_OBJECT,
-				captured.id,
-				model,
-				HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
-				captured.modelOrientation,
-				mod(1024 + pending.orientation, 2048),
-				pending.plane,
-				pending.location.getX(),
-				pending.location.getY(),
-				pending.height
-			));
+			addStaticObject(recreation, pending, model);
 			return true;
 		}
 
@@ -538,8 +487,7 @@ public class SceneTools {
 			return true;
 		}
 
-		// The renderer recognises test objects by their exact position, so move each off the spot where the real object
-		// it stands in for would be, and off other test objects, such as parts of the same wall
+		// Test objects are recognised by exact position, so move each off the real object's spot and other test objects
 		var location = pending.location;
 		int nudge = 0;
 		do {
@@ -553,7 +501,7 @@ public class SceneTools {
 			modelIds,
 			def.mirrored != pending.part.isMirrored(),
 			pending.part.isDiagonal(),
-			// Moving the model back by the nudge lets pieces nudged by different amounts still meet without cracks
+			// Moved back by the nudge, so pieces still meet without cracks
 			modelData -> SceneCapture.finishModel(modelData, def, quarterTurns, contour, nudgeBack, false),
 			// Turned by the RuneLiteObject when drawn
 			quarterTurns,
@@ -569,9 +517,6 @@ public class SceneTools {
 		return true;
 	}
 
-	/**
-	 * Hand the static objects, floor & gap fillers to the renderer, which uploads them over the next few ticks
-	 */
 	private void placeStaticScene(SceneRecreation recreation) {
 		log.debug("Built {} recreated static objects in {} ms", recreation.staticObjects.size(), (System.nanoTime() - recreation.startedAt) / 1_000_000);
 		recreatedStaticObjects = recreation.staticObjects;
@@ -579,13 +524,13 @@ public class SceneTools {
 		recreatedSceneRenderer.set(recreatedStaticObjects, recreatedFloor, recreation.gapFillers);
 		testObjectLights.setStaticObjects(recreatedStaticObjects);
 		if (!recreatedFloor.isEmpty() || !recreation.gapFillers.isEmpty()) {
-			// 117 HD only asks render callbacks about tiles while uploading the scene, so upload it again without them.
-			// Real tiles where the capture had holes go too, or they'd cover up the black drawn behind everything.
+			// 117 HD only asks render callbacks about tiles while uploading, so upload again without them, including
+			// where the capture had holes
 			Set<Integer> keys = new HashSet<>();
 			for (var tile : recreatedFloor)
-				keys.add(packTile(tile.plane, tile.tileExX, tile.tileExY));
+				keys.add(RecreatedSceneRenderer.packTile(tile.plane, tile.tileExX, tile.tileExY));
 			for (var tile : recreation.gapFillers)
-				keys.add(packTile(tile.plane, tile.tileExX, tile.tileExY));
+				keys.add(RecreatedSceneRenderer.packTile(tile.plane, tile.tileExX, tile.tileExY));
 			floorTileKeys = keys;
 			renderCallbackManager.register(hideFloorTiles);
 			reloadScene();
@@ -610,18 +555,14 @@ public class SceneTools {
 		postMessage(message);
 	}
 
-	/**
-	 * Upload 117 HD's copy of the scene again, unless the renderer has already been destroyed, such as while 117 HD stops
-	 */
+	/** Upload 117 HD's scene again, unless its renderer is gone */
 	private void reloadScene() {
 		var renderer = plugin.renderer;
 		if (renderer != null)
 			renderer.reloadScene();
 	}
 
-	/**
-	 * The tile at a local point in the top-level scene, including the extended area around it, or null if there's none
-	 */
+	/** The tile at a local point, including the extended scene, or null */
 	@Nullable
 	private Tile getSceneTile(LocalPoint location, int plane) {
 		return getExtendedTile(
@@ -640,10 +581,7 @@ public class SceneTools {
 		return tiles[plane][tileExX][tileExY];
 	}
 
-	/**
-	 * Lay a capture's tiles out as a floor in the player's region, drawn in place of the real tiles. Like objects, every
-	 * plane goes on the player's.
-	 */
+	/** Lay a capture's tiles out on the player's plane, in place of the real tiles */
 	private void recreateFloor(
 		SceneCapture.Capture capture,
 		int baseX,
@@ -664,7 +602,7 @@ public class SceneTools {
 			recreation.floor.add(floorTile);
 		}
 
-		// Captures from before gap fillers were captured have none
+		// Older captures have none
 		if (capture.gapFillers == null)
 			return;
 		for (var captured : capture.gapFillers) {
@@ -672,7 +610,7 @@ public class SceneTools {
 			int tileExY = (baseY >> Perspective.LOCAL_COORD_BITS) + captured.y + HDUtils.EXTENDED_SCENE_OFFSET;
 			if (tileExX < 1 || tileExY < 1 || tileExX >= Constants.EXTENDED_SCENE_SIZE - 1 || tileExY >= Constants.EXTENDED_SCENE_SIZE - 1)
 				continue;
-			// Holes don't need a real tile to replace, but take the level of one if it's there, like the floor
+			// Taking a real tile's level, if there is one
 			Tile tile = getExtendedTile(originPlane, tileExX, tileExY);
 			var gapFiller = createFloorTile(captured, tile == null ? originPlane : tile.getRenderLevel(), tileExX, tileExY, groundHeight);
 			if (gapFiller != null)
@@ -680,10 +618,7 @@ public class SceneTools {
 		}
 	}
 
-	/**
-	 * Place frozen copies of a capture's NPCs, built from their definitions' models, colours & scale, and uploaded like
-	 * static scenery. They're never animated and do nothing, since they only show what was there.
-	 */
+	/** Frozen copies of a capture's NPCs, from their definitions, uploaded like static scenery */
 	private void recreateNpcs(
 		SceneCapture.Capture capture,
 		int baseX,
@@ -755,9 +690,7 @@ public class SceneTools {
 		);
 	}
 
-	/**
-	 * A captured tile's triangles at the player's ground height, or null if the capture saved no shape for it
-	 */
+	/** A captured tile at the player's ground height, or null without a shape */
 	@Nullable
 	private static FloorTile createFloorTile(SceneCapture.CapturedTile captured, int plane, int tileExX, int tileExY, int groundHeight) {
 		if (captured.vertices == null || captured.colors == null)
@@ -779,10 +712,7 @@ public class SceneTools {
 		);
 	}
 
-	/**
-	 * Hide the tiles, objects, NPCs and other players, leaving only spawned & recreated test objects and the local player drawn.
-	 * Can be called from any thread.
-	 */
+	/** Draw only test objects & the local player. Any thread. */
 	public void setOnlyDrawTestObjects(boolean only) {
 		clientThread.invoke(() -> {
 			if (developerMode)
@@ -799,18 +729,14 @@ public class SceneTools {
 			renderCallbackManager.register(onlyDrawTestObjects);
 		} else {
 			renderCallbackManager.unregister(onlyDrawTestObjects);
-			// Bring back the lights of the objects which were hidden
 			if (plugin.getSceneContext() != null)
 				hdInternals.reloadLights();
 		}
-		// 117 HD only asks render callbacks about static tiles & objects while uploading the scene, which it can redo
-		// without the game reload Blindfold uses, so test objects stay
+		// 117 HD only asks render callbacks while uploading, which it can redo without a game reload
 		reloadScene();
 	}
 
-	/**
-	 * Fade out the lights of objects which aren't being drawn, which 117 HD would otherwise keep lit
-	 */
+	/** Fade out undrawn objects' lights, which 117 HD would keep */
 	private void hideUndrawnObjectLights() {
 		if (plugin.getSceneContext() == null)
 			return;
@@ -820,10 +746,7 @@ public class SceneTools {
 				light.markedForRemoval = true;
 	}
 
-	/**
-	 * Light the scene with the recreated capture's environment wherever the camera is, picking it up again whenever
-	 * environments.json is reloaded so edits show up live
-	 */
+	/** Light everywhere with the recreated scene's environment, picking up environments.json edits live */
 	private void updateEnvironmentOverride() {
 		var ctx = plugin.getSceneContext();
 		if (ctx == null)
@@ -843,16 +766,15 @@ public class SceneTools {
 				overriddenEnvironment = environment;
 				overriddenEnvironmentArea = environment.area;
 				overriddenEnvironmentInstant = instant;
-				// Cover everywhere, keeping the area's name, which can also be the environment's
+				// Keeping the area's name, which can be the environment's
 				environment.area = new Area(
 					environment.area.name,
 					Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE
 				);
-				// Switch to the recreated scene's lighting at once rather than fading into it
 				environment.instantTransition = true;
 			}
 		}
-		// 117 HD picks the first of the scene's environments which contains the camera
+		// 117 HD picks the first containing the camera
 		if (environment != null && (ctx.environments.isEmpty() || ctx.environments.get(0) != environment)) {
 			ctx.environments.remove(environment);
 			ctx.environments.add(0, environment);
@@ -863,7 +785,7 @@ public class SceneTools {
 		if (overriddenEnvironment == null)
 			return;
 		overriddenEnvironment.area = overriddenEnvironmentArea;
-		// 117 HD only switches away on its next frame, so keep the transition instant until it has
+		// 117 HD only switches away next frame
 		finishLeavingEnvironment();
 		leavingEnvironment = overriddenEnvironment;
 		leavingEnvironmentInstant = overriddenEnvironmentInstant;
@@ -887,9 +809,7 @@ public class SceneTools {
 		});
 	}
 
-	/**
-	 * Must be called on the client thread
-	 */
+	/** Must be called on the client thread */
 	void removeRecreatedScene() {
 		sceneRecreation = null;
 		for (var object : recreatedSceneObjects) {
@@ -918,8 +838,20 @@ public class SceneTools {
 		spawnerTools.get().postMessage(message);
 	}
 
-	private static int packTile(int level, int tileExX, int tileExY) {
-		return level << 16 | tileExX << 8 | tileExY;
+	private static void addStaticObject(SceneRecreation recreation, PendingScenePart pending, Model model) {
+		var captured = pending.object;
+		recreation.staticObjects.add(new StaticObject(
+			ModelHash.TYPE_OBJECT,
+			captured.id,
+			model,
+			HDUtils.getModelPreOrientation(captured.shape | captured.rotation << 6),
+			captured.modelOrientation,
+			mod(1024 + pending.orientation, 2048),
+			pending.plane,
+			pending.location.getX(),
+			pending.location.getY(),
+			pending.height
+		));
 	}
 
 	@RequiredArgsConstructor
@@ -927,7 +859,7 @@ public class SceneTools {
 		final String name;
 		final long startedAt = System.nanoTime();
 		final List<PendingScenePart> pending = new ArrayList<>();
-		// Animated objects, placed as RuneLiteObjects once the static scene has been uploaded
+		// Placed once the static scene has uploaded
 		final List<PendingScenePart> animated = new ArrayList<>();
 		boolean staticScenePlaced;
 		final List<StaticObject> staticObjects = new ArrayList<>();

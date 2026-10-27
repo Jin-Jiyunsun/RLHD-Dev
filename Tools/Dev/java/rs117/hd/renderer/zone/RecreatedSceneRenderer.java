@@ -24,6 +24,7 @@ import net.runelite.api.hooks.*;
 import rs117.hd.HdPlugin;
 import rs117.hd.config.ShadowMode;
 import rs117.hd.dev.Reflection;
+import rs117.hd.opengl.shader.ShaderProgram;
 import rs117.hd.renderer.SkyRenderer;
 import rs117.hd.scene.MaterialManager;
 import rs117.hd.scene.ModelOverrideManager;
@@ -56,16 +57,13 @@ import static rs117.hd.utils.MathUtils.*;
 import static rs117.hd.utils.buffer.GLBuffer.MAP_WRITE;
 
 /**
- * Developer tools: draws a recreated scene capture's static objects, NPCs and floor at full speed, without changes to 117 HD.
- * <p>
- * They're uploaded into zones of their own, the same way 117 HD uploads static scenery, and drawn right after 117 HD draws
- * the real zone in the same place, using the top-level scene's levels, roofs and culling. This lives in 117 HD's renderer
- * package so it can use the package-private parts of zones, and calls into 117 HD's SceneUploader through reflection.
+ * Draws a recreated scene capture's static objects, NPCs & floor in zones of its own, uploaded like 117 HD's static
+ * scenery and drawn right after each real zone. In 117 HD's package for zones' package-private parts.
  */
 @Slf4j
 @Singleton
 public class RecreatedSceneRenderer {
-	// Spread starting uploads of big scenes over a few ticks, to avoid a hitch
+	// Spread over a few ticks, to avoid a hitch
 	private static final long UPLOAD_NANOS_PER_TICK = 6_000_000;
 	// Zones being filled on 117 HD's worker threads at once
 	private static final int MAX_UPLOADS_IN_FLIGHT = 16;
@@ -110,111 +108,108 @@ public class RecreatedSceneRenderer {
 	@Inject
 	private TileOverrideManager tileOverrideManager;
 
-	/**
-	 * A recreated object or NPC, uploaded like static scenery. Its model is already rotated the way the client rotates
-	 * the object it stands in for.
-	 */
+	/** A recreated object or NPC, with its model already rotated like the client rotates the real one */
 	@RequiredArgsConstructor
 	public static class StaticObject {
-		// The ModelHash type it stands in for, an object or NPC, which picks its model overrides & lights
+		// ModelHash type, picking its model overrides & lights
 		public final int type;
-		// The object or NPC ID
 		public final int id;
 		public final Model model;
-		// The same orientations 117 HD gets for the real object: before & while being drawn
+		// What 117 HD gets for the real object
 		public final int preOrientation;
 		public final int orientation;
-		// For the object's lights, which real objects orient by their rotation
 		public final int lightOrientation;
 		public final int plane;
-		// Local coordinates in the scene
 		public final int x;
 		public final int y;
 		public final int height;
 		public volatile boolean removed;
 	}
 
-	/**
-	 * A tile of a recreated scene capture's floor, drawn in place of the real tile it lands on
-	 */
+	/** A recreated floor tile, drawn in place of the real one */
 	@RequiredArgsConstructor
 	public static class FloorTile {
-		// The real tile it replaces, in the extended scene
 		public final int plane;
 		public final int tileExX;
 		public final int tileExY;
-		// Three corners per triangle, each as a position within the tile & a height, with a colour for each corner
+		// Three corners per triangle, as positions within the tile & heights, with a colour each
 		public final int[] vertices;
 		public final int[] colors;
-		// What picks the tile's tile overrides each time it's uploaded
+		// Pick its tile overrides each time it's uploaded
 		@Nullable
 		public final int[] worldPos;
 		public final int underlayId;
 		public final int overlayId;
-		// For each triangle: its vanilla texture or -1, and which of the tile's overrides it uses
+		// Per triangle: vanilla texture or -1, and which of the tile's overrides it uses
 		@Nullable
 		public final int[] textures;
 		@Nullable
 		public final int[] overrideTypes;
+
+		int texture(int triangle) {
+			return textures == null ? -1 : textures[triangle];
+		}
+
+		int overrideType(int triangle) {
+			return overrideTypes == null ? 0 : overrideTypes[triangle];
+		}
 	}
 
 	private static class ZoneContent {
 		final List<StaticObject> objects = new ArrayList<>();
 		final List<FloorTile> floor = new ArrayList<>();
-		// Holes in the ground, drawn black behind everything like 117 HD's gap fillers
+		// Holes in the ground, drawn black like 117 HD's gap fillers
 		final List<FloorTile> gapFillers = new ArrayList<>();
 	}
 
 	private final Map<Integer, ZoneContent> contents = new HashMap<>();
-	// Whether 117 HD's own gap fillers are left out, such as while everything but test objects is hidden
+	// While everything but test objects is hidden
 	@Getter
 	@Setter
 	private boolean hidingRealGapFillers;
-	// The real zone whose gap fillers are switched off while 117 HD draws it
 	@Nullable
 	private Zone realZoneWithoutGapFillers;
 	private final Zone[][] zones = new Zone[NUM_ZONES][NUM_ZONES];
 	private final ArrayDeque<Integer> pendingZones = new ArrayDeque<>();
-	// Zones being filled on 117 HD's worker threads, like its own ZoneUploadJobs, with their buffers mapped & unmapped on
-	// the client thread. Running as 117 HD's jobs means it waits for them before tearing its renderer down.
+	// Filled on 117 HD's workers like its ZoneUploadJobs, so it waits for them before tearing its renderer down
 	private final List<ZoneUpload> uploadsInFlight = new ArrayList<>();
-	// Goes up each time everything is uploaded again, so zones from an earlier upload still in flight are thrown away
+	// Zones from an earlier upload still in flight are thrown away
 	private int uploadGeneration;
 	private long uploadStartedAt;
-	// The floor's blending, being worked out on a worker thread
 	@Nullable
 	private GenericJob blendingJob;
 	@Nullable
 	private volatile RecreatedFloorBlending blendingResult;
-	// The renderer the zones were uploaded for, since they're gone if 117 HD has started a new one since
+	// The zones go with the renderer they were uploaded for
 	@Nullable
 	private Object uploadedFor;
-	// The ground data 117 HD had generated when the zones were uploaded. It generates it again when it reloads its scene, such
-	// as when tile or model overrides or ground settings change, which keeps the scene context, so look out for new data.
+	// 117 HD regenerates its ground data when it reloads its scene for override or setting changes
 	@Nullable
 	private Object uploadedForSceneData;
 	private List<FloorTile> floor = List.of();
-	// Worked out from the whole floor before uploading it, and again whenever everything is uploaded again
+	// Worked out from the whole floor whenever everything is uploaded
 	@Nullable
 	private RecreatedFloorBlending floorBlending;
 
-	/**
-	 * Replace what's recreated. Must be called on the client thread.
-	 */
+	/** Replace what's recreated. Client thread only. */
 	public void set(List<StaticObject> objects, List<FloorTile> floor, List<FloorTile> gapFillers) {
 		assert client.isClientThread();
 		clear();
 		int sceneOffset = HDUtils.EXTENDED_SCENE_OFFSET;
 		for (var object : objects) {
-			int zoneKey = packZone(((object.x >> LOCAL_COORD_BITS) + sceneOffset) >> 3, ((object.y >> LOCAL_COORD_BITS) + sceneOffset) >> 3);
-			contents.computeIfAbsent(zoneKey, k -> new ZoneContent()).objects.add(object);
+			contentAt(((object.x >> LOCAL_COORD_BITS) + sceneOffset) >> 3, ((object.y >> LOCAL_COORD_BITS) + sceneOffset) >> 3)
+				.objects.add(object);
 		}
 		for (var tile : floor)
-			contents.computeIfAbsent(packZone(tile.tileExX >> 3, tile.tileExY >> 3), k -> new ZoneContent()).floor.add(tile);
+			contentAt(tile.tileExX >> 3, tile.tileExY >> 3).floor.add(tile);
 		for (var tile : gapFillers)
-			contents.computeIfAbsent(packZone(tile.tileExX >> 3, tile.tileExY >> 3), k -> new ZoneContent()).gapFillers.add(tile);
+			contentAt(tile.tileExX >> 3, tile.tileExY >> 3).gapFillers.add(tile);
 		this.floor = floor;
 		uploadAll();
+	}
+
+	private ZoneContent contentAt(int zx, int zz) {
+		return contents.computeIfAbsent(packZone(zx, zz), k -> new ZoneContent());
 	}
 
 	public boolean hasContent() {
@@ -225,12 +220,19 @@ public class RecreatedSceneRenderer {
 		return !pendingZones.isEmpty() || !uploadsInFlight.isEmpty() || floorBlending == null && !contents.isEmpty();
 	}
 
-	/**
-	 * Remove what's recreated. Must be called on the client thread.
-	 */
+	/** Remove what's recreated. Client thread only. */
 	public void clear() {
 		assert client.isClientThread();
-		boolean rendererAlive = plugin.renderer != null && plugin.renderer == uploadedFor;
+		dropZones(plugin.renderer != null && plugin.renderer == uploadedFor);
+		contents.clear();
+		pendingZones.clear();
+		floor = List.of();
+		floorBlending = null;
+		uploadedForSceneData = null;
+	}
+
+	/** Destroy the zones, or just forget them if their buffers went with their renderer */
+	private void dropZones(boolean rendererAlive) {
 		dropUploadsInFlight(rendererAlive);
 		for (var column : zones) {
 			for (int i = 0; i < column.length; i++) {
@@ -244,11 +246,6 @@ public class RecreatedSceneRenderer {
 				column[i] = null;
 			}
 		}
-		contents.clear();
-		pendingZones.clear();
-		floor = List.of();
-		floorBlending = null;
-		uploadedForSceneData = null;
 	}
 
 	private void uploadAll() {
@@ -261,10 +258,7 @@ public class RecreatedSceneRenderer {
 		uploadStartedAt = System.nanoTime();
 	}
 
-	/**
-	 * Throw away zones still being filled, waiting for them if their buffers are still alive, or leaving them to 117 HD
-	 * otherwise, which has already cancelled them while tearing its renderer down
-	 */
+	/** Throw away zones still being filled, waiting for them unless 117 HD has already cancelled them */
 	private void dropUploadsInFlight(boolean rendererAlive) {
 		for (var upload : uploadsInFlight) {
 			if (rendererAlive) {
@@ -278,24 +272,15 @@ public class RecreatedSceneRenderer {
 		uploadsInFlight.clear();
 	}
 
-	/**
-	 * Upload what's waiting to be, a few zones per tick. Must be called on the client thread every tick.
-	 */
+	/** Upload a few zones per tick. Call on the client thread every tick. */
 	public void update() {
 		if (contents.isEmpty())
 			return;
 
-		// 117 HD's zones and their buffers go when it starts a new renderer, such as when it restarts, so upload ours again
+		// The zones' buffers go when 117 HD starts a new renderer
 		var renderer = plugin.renderer;
 		if (renderer != uploadedFor) {
-			dropUploadsInFlight(false);
-			for (var column : zones) {
-				for (int i = 0; i < column.length; i++) {
-					if (column[i] != null)
-						forget(column[i]);
-					column[i] = null;
-				}
-			}
+			dropZones(false);
 			uploadedFor = renderer;
 			uploadAll();
 		}
@@ -306,7 +291,7 @@ public class RecreatedSceneRenderer {
 		if (root == null || root.sceneContext == null || root.isLoading)
 			return;
 
-		// Pick up changes to tile & model overrides and ground settings, which 117 HD reloads its scene for
+		// Pick up override & ground setting changes
 		if (root.sceneContext.vertexTerrainColor != uploadedForSceneData) {
 			uploadedForSceneData = root.sceneContext.vertexTerrainColor;
 			uploadAll();
@@ -315,7 +300,7 @@ public class RecreatedSceneRenderer {
 		if (floorBlending == null && !updateBlending())
 			return;
 
-		// Size each zone & map its buffers here, then fill them on worker threads
+		// Size & map here, then fill on workers
 		long deadline = System.nanoTime() + UPLOAD_NANOS_PER_TICK;
 		while (!pendingZones.isEmpty() && uploadsInFlight.size() < MAX_UPLOADS_IN_FLIGHT && System.nanoTime() < deadline) {
 			int key = pendingZones.poll();
@@ -351,10 +336,7 @@ public class RecreatedSceneRenderer {
 		}
 	}
 
-	/**
-	 * Work out the floor's blending on a worker thread, returning whether it's ready. The tile overrides are picked here
-	 * though, since looking them up changes them.
-	 */
+	/** Blend the floor on a worker, returning whether it's ready. Tile overrides change when looked up, so not there */
 	private boolean updateBlending() {
 		if (blendingJob == null) {
 			var overrides = new IdentityHashMap<FloorTile, TileOverride[]>();
@@ -370,20 +352,16 @@ public class RecreatedSceneRenderer {
 		}
 		if (!blendingJob.isDone())
 			return false;
-		var job = blendingJob;
 		floorBlending = blendingResult;
-		job.release();
+		blendingJob.release();
 		if (floorBlending == null) {
-			// It failed, which 117 HD has logged, so try again next time
+			// Failed, and 117 HD has logged why
 			blendingJob = null;
 			return false;
 		}
 		return true;
 	}
 
-	/**
-	 * Put the zones which have finished filling in place, once their buffers are unmapped
-	 */
 	private void finishUploads() {
 		for (var it = uploadsInFlight.iterator(); it.hasNext(); ) {
 			var upload = it.next();
@@ -418,10 +396,7 @@ public class RecreatedSceneRenderer {
 		volatile Throwable error;
 	}
 
-	/**
-	 * Whether the top-level scene's objects at this level, under this roof, were drawn last frame, or null if nothing
-	 * has been drawn yet. Must be called on the client thread.
-	 */
+	/** Whether objects at this level & roof were drawn last frame, or null before anything is. Client thread only. */
 	@Nullable
 	public Boolean isLevelDrawn(int level, int roofId) {
 		var root = sceneManager.getRoot();
@@ -431,15 +406,13 @@ public class RecreatedSceneRenderer {
 			   !(level > root.level && root.hideRoofIds.contains(roofId));
 	}
 
-	/**
-	 * Size a zone and map its buffers, which has to happen on the client thread, or return null if it has nothing to draw
-	 */
+	/** Size a zone & map its buffers on the client thread, or null if there's nothing to draw */
 	@Nullable
 	private Zone startZoneUpload(WorldViewContext root, int zx, int zz, ZoneContent content) {
 		var ctx = root.sceneContext;
 		int[] worldPos = new int[3];
 
-		// Work out how much room the zone needs, like SceneUploader.estimateZoneSize
+		// Like SceneUploader.estimateZoneSize
 		Zone zone = plugin.getInjector().getInstance(Zone.class);
 		for (var object : content.objects) {
 			ctx.localToWorld(object.x, object.y, object.plane, worldPos);
@@ -455,7 +428,7 @@ public class RecreatedSceneRenderer {
 				if (floorBlending.getWaterType(tile, triangle) != WaterType.NONE)
 					waterTriangles++;
 		}
-		// The water's surface is drawn on top of the sunken ground under it
+		// The surface, on top of the ground under it
 		zone.sizeO += waterTriangles;
 		zone.sizeF += waterTriangles;
 		zone.hasWater = waterTriangles > 0;
@@ -467,7 +440,7 @@ public class RecreatedSceneRenderer {
 		if (zone.sizeO == 0)
 			return null;
 
-		// Map the buffers like ZoneUploadJob does
+		// Like ZoneUploadJob
 		var vboO = new GLBuffer("Zone::VBO::Opaque::Recreated", GL_ARRAY_BUFFER, GL_STATIC_DRAW);
 		vboO.initialize(zone.sizeO * Zone.VERT_SIZE * 3);
 		vboO.map(MAP_WRITE);
@@ -485,9 +458,7 @@ public class RecreatedSceneRenderer {
 		return zone;
 	}
 
-	/**
-	 * Fill a zone's mapped buffers. Runs on a worker thread, reading only what doesn't change while it's in flight.
-	 */
+	/** Fill a zone's mapped buffers on a worker, reading only what doesn't change meanwhile */
 	private void fillZone(
 		WorldViewContext root,
 		int zx,
@@ -500,8 +471,7 @@ public class RecreatedSceneRenderer {
 		var scene = ctx.scene;
 		var tiles = scene.getExtendedTiles();
 
-		// Upload like SceneUploader.uploadZone, without roofs to hide, putting objects on their levels and the floor with
-		// the terrain
+		// Like SceneUploader.uploadZone, without roofs
 		zone.minX = zone.minZ = 0;
 		zone.maxX = zone.maxZ = CHUNK_SIZE * LOCAL_TILE_SIZE;
 		zone.minY = Integer.MAX_VALUE;
@@ -541,8 +511,7 @@ public class RecreatedSceneRenderer {
 					int tileZ = tile.getRenderLevel();
 					ctx.localToWorld(object.x, object.y, level, uploaderWorldPos);
 
-					// Objects which inherit the tile's colour take it from the recreated floor, rather than the real tile it
-					// hides, so for the upload, the real tile's overrides are swapped for the recreated floor's too
+					// Objects inheriting the tile's colour take it, and its overrides, from the recreated floor
 					var floor = findFloorTile(floorByTile.get(packTile(tileZ, tileExX, tileExY)), object.height);
 					var floorOverrides = floor == null ? null : floorBlending.getOverrides(floor);
 					boolean swapOverrides = floorOverrides != null;
@@ -583,9 +552,7 @@ public class RecreatedSceneRenderer {
 		}
 	}
 
-	/**
-	 * The same as SceneUploader.estimateRenderableSize, for a model
-	 */
+	/** Like SceneUploader.estimateRenderableSize */
 	private static void estimateModelSize(Zone zone, Model model, ModelOverride modelOverride) {
 		int faceCount = model.getFaceCount();
 		boolean isVanillaTextured = model.getFaceTextures() != null;
@@ -599,10 +566,8 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * Draw a recreated scene capture's floor tiles from their triangles, like SceneUploader.uploadTilePaint & uploadTileModel
-	 * draw real tiles. Their tile overrides are picked from where the tiles really are, with their replacements picked by
-	 * the captured tile's colour, so edits to tile_overrides.json show up when the floor is uploaded again. Water is drawn
-	 * as the ground under it, sunk deeper the further it is from the shore, with its surface uploaded separately.
+	 * Like SceneUploader.uploadTilePaint & uploadTileModel, with tile overrides from where the tiles really are, so
+	 * tile_overrides.json edits show up. Water is drawn as the ground under it, with its surface uploaded separately.
 	 */
 	private void uploadFloor(
 		SceneUploader uploader,
@@ -616,10 +581,6 @@ public class RecreatedSceneRenderer {
 	) {
 		if (floor.isEmpty())
 			return;
-		// From 117 HD's own injector, since 117 HD doesn't create it up front for the developer plugin to be given
-		var proceduralGenerator = plugin.getInjector().getInstance(ProceduralGenerator.class);
-		if (uploader.writeCache == null)
-			uploader.writeCache = new VertexWriteCache.Collection();
 		var writeCache = uploader.writeCache;
 		writeCache.setOutputBuffers(vertexBuffer, vertexBuffer, textureBuffer);
 		final var vb = writeCache.getVertexBuffer();
@@ -641,8 +602,8 @@ public class RecreatedSceneRenderer {
 			boolean painted = RecreatedFloorBlending.isPainted(tile);
 
 			for (int t = 0, i = 0; i < tile.colors.length; t++, i += 3) {
-				int textureId = tile.textures == null ? -1 : tile.textures[t];
-				int type = tile.overrideTypes == null ? 0 : tile.overrideTypes[t];
+				int textureId = tile.texture(t);
+				int type = tile.overrideType(t);
 				var override = overrides == null ? NONE : overrides[type];
 				boolean isOverlay = painted ? blending.isMainOverlay(tile) : type == 2;
 				System.arraycopy(tile.colors, i, colors, 0, 3);
@@ -655,7 +616,7 @@ public class RecreatedSceneRenderer {
 
 				var waterType = blending.getWaterType(tile, t);
 				if (waterType != WaterType.NONE) {
-					// The ground under the water, like SceneUploader draws it
+					// The ground under the water
 					for (int k = 0; k < 3; k++) {
 						int depth = blending.getUnderwaterDepth(corners[k]);
 						colors[k] = HDUtils.UNDERWATER_HSL;
@@ -735,9 +696,7 @@ public class RecreatedSceneRenderer {
 		writeCache.release();
 	}
 
-	/**
-	 * Draw a recreated floor's water surface, like SceneUploader draws real water's, with foam where it meets land
-	 */
+	/** Like SceneUploader draws water's surface, with foam where it meets land */
 	private void uploadWaterSurface(
 		SceneUploader uploader,
 		ZoneSceneContext ctx,
@@ -768,8 +727,7 @@ public class RecreatedSceneRenderer {
 				var waterType = blending.getWaterType(tile, t);
 				if (waterType == WaterType.NONE)
 					continue;
-				int type = tile.overrideTypes == null ? 0 : tile.overrideTypes[t];
-				var override = overrides == null ? NONE : overrides[type];
+				var override = overrides == null ? NONE : overrides[tile.overrideType(t)];
 				// The water shader draws foam where the colour is 0
 				for (int k = 0; k < 3; k++) {
 					colors[k] = blending.isShore(RecreatedFloorBlending.cornerKey(tile, t * 3 + k)) ? 0 : 127;
@@ -785,9 +743,7 @@ public class RecreatedSceneRenderer {
 		writeCache.release();
 	}
 
-	/**
-	 * Draw the holes in a recreated floor black, like SceneUploader.uploadZoneGapFillers
-	 */
+	/** Like SceneUploader.uploadZoneGapFillers */
 	private void uploadGapFillers(
 		SceneUploader uploader,
 		ZoneSceneContext ctx,
@@ -820,10 +776,7 @@ public class RecreatedSceneRenderer {
 		writeCache.release();
 	}
 
-	/**
-	 * Write one of a floor tile's triangles, with its textures lined up with where the tile really is, the same way they
-	 * are on real shaped tiles
-	 */
+	/** Write a floor triangle, with its textures lined up with where the tile really is, like real shaped tiles */
 	private static void putTriangle(
 		VertexWriteCache vb,
 		VertexWriteCache tb,
@@ -871,9 +824,6 @@ public class RecreatedSceneRenderer {
 		}
 	}
 
-	/**
-	 * Resolve the whole floor's tile overrides, for blending its tiles into each other with
-	 */
 	private void resolveFloorOverrides(Map<FloorTile, TileOverride[]> overrides, Set<FloorTile> overlayMainTiles) {
 		for (var tile : floor) {
 			if (tile.worldPos == null)
@@ -886,8 +836,8 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * A captured floor tile's main, underlay & overlay tile overrides, from where the tile really is, returning whether the
-	 * main one was found by the tile's overlay. That's only kept on the override until it's next looked up, so it's read here.
+	 * A floor tile's main, underlay & overlay tile overrides, from where it really is, returning whether the main one
+	 * was found by its overlay, which the override only keeps until it's next looked up
 	 */
 	private boolean resolveOverrides(FloorTile tile, TileOverride[] overrides) {
 		int[] wp = tile.worldPos;
@@ -901,9 +851,7 @@ public class RecreatedSceneRenderer {
 		return mainIsOverlay;
 	}
 
-	/**
-	 * The recreated floor tile an object stands on, out of those recreated on its tile: the one nearest its height
-	 */
+	/** Of the floor tiles recreated on an object's tile, the one nearest its height */
 	@Nullable
 	private static FloorTile findFloorTile(@Nullable List<FloorTile> candidates, int objectHeight) {
 		if (candidates == null)
@@ -924,9 +872,8 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * The real tile, but with the recreated floor's colours, for objects to inherit them like SceneUploader does. Painted
-	 * tiles keep their corner colours, while shaped tiles become a tile of two triangles, shaped so the first is underlay
-	 * and the second overlay, which is all 117 HD picks a colour by.
+	 * The real tile with the recreated floor's colours, for objects to inherit. Shaped tiles become two triangles,
+	 * first underlay then overlay, which is all 117 HD picks a colour by.
 	 */
 	private static Tile standInTile(Tile real, FloorTile floor) {
 		var v = floor.vertices;
@@ -935,8 +882,8 @@ public class RecreatedSceneRenderer {
 		int sw = floor.colors[0], se = sw, ne = sw, nw = sw;
 		for (int corner = 0; corner < floor.colors.length; corner++) {
 			int triangle = corner / 3;
-			int type = floor.overrideTypes == null ? 0 : floor.overrideTypes[triangle];
-			int texture = floor.textures == null ? -1 : floor.textures[triangle];
+			int type = floor.overrideType(triangle);
+			int texture = floor.texture(triangle);
 			int color = floor.colors[corner];
 			int x = v[corner * 3], z = v[corner * 3 + 2];
 			if (type == 0) {
@@ -1005,20 +952,19 @@ public class RecreatedSceneRenderer {
 			});
 		}
 
-		boolean isPaint = painted;
 		return Reflection.wrap(Tile.class, real, name -> {
 			switch (name) {
 				case "getSceneTilePaint":
-					return isPaint ? standIn : Reflection.NULL;
+					return painted ? standIn : Reflection.NULL;
 				case "getSceneTileModel":
-					return isPaint ? Reflection.NULL : standIn;
+					return painted ? Reflection.NULL : standIn;
 			}
 			return null;
 		});
 	}
 
-
-	private static int packTile(int level, int tileExX, int tileExY) {
+	/** A tile's level & extended scene position as one key */
+	public static int packTile(int level, int tileExX, int tileExY) {
 		return level << 16 | tileExX << 8 | tileExY;
 	}
 
@@ -1026,10 +972,7 @@ public class RecreatedSceneRenderer {
 		return override.isConstant() ? override : override.resolveReplacements(vars);
 	}
 
-	/**
-	 * The h, s & l variables tile override replacements pick by, from the captured tile's colour like TileOverrideVariables
-	 * gets them from a real tile: its south-western corner, preferring the underlay
-	 */
+	/** Tile override replacement variables, from the south-west corner like TileOverrideVariables */
 	private static VariableSupplier getTileColorVariables(FloorTile tile) {
 		int color = tile.colors[0];
 		var v = tile.vertices;
@@ -1067,11 +1010,8 @@ public class RecreatedSceneRenderer {
 	}
 
 	/**
-	 * Draw the recreated zone in the same place, right after 117 HD has drawn the real one
-	 */
-	/**
-	 * Switch off the real zone's gap fillers while 117 HD draws it, if they're being hidden, since they're drawn whatever
-	 * render callbacks say. {@link #restoreRealGapFillers} must be called once it's drawn.
+	 * Switch off the real zone's gap fillers while 117 HD draws it, since render callbacks can't hide them.
+	 * {@link #restoreRealGapFillers} must be called after.
 	 */
 	public void beforeDrawZoneOpaque(Scene scene, int zx, int zz) {
 		if (!hidingRealGapFillers || scene == null || scene.getWorldViewId() != WorldView.TOPLEVEL)
@@ -1092,9 +1032,7 @@ public class RecreatedSceneRenderer {
 		realZoneWithoutGapFillers = null;
 	}
 
-	/**
-	 * Draw the recreated zone in the same place, right after 117 HD has drawn the real one
-	 */
+	/** Draw the recreated zone right after 117 HD draws the real one */
 	public void afterDrawZoneOpaque(Scene scene, int zx, int zz) throws IllegalAccessException {
 		Zone zone = getDrawableZone(scene, zx, zz);
 		var root = sceneManager.getRoot();
@@ -1102,7 +1040,7 @@ public class RecreatedSceneRenderer {
 			return;
 		var renderer = (ZoneRenderer) plugin.renderer;
 
-		// Culled along with the real zone, which 117 HD has just checked
+		// Culled with the real zone
 		Zone real = root.zones[zx][zz];
 		zone.inSceneFrustum = real.inSceneFrustum;
 		zone.inShadowFrustum = real.inShadowFrustum;
@@ -1118,15 +1056,12 @@ public class RecreatedSceneRenderer {
 		}
 
 		if (castsShadows(renderer) && zone.inShadowFrustum) {
-			renderer.directionalCmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) FAST_SHADOW_PROGRAM.get(renderer));
+			renderer.directionalCmd.SetShader((ShaderProgram) FAST_SHADOW_PROGRAM.get(renderer));
 			zone.renderOpaque(renderer.directionalCmd, root, SHOULD_DRAW_ROOF_SHADOWS.getBoolean(renderer));
 		}
 	}
 
-	/**
-	 * Sort the recreated zones' transparent faces for this frame, like WorldViewContext.sortStaticAlphaModels, right after
-	 * 117 HD has queued sorting its own. Zones are culled by the real zones' visibility from the previous frame.
-	 */
+	/** Sort transparent faces like WorldViewContext.sortStaticAlphaModels, culled by last frame's real zones */
 	public void afterPreSceneDraw(Scene scene) {
 		if (contents.isEmpty() || scene == null || scene.getWorldViewId() != WorldView.TOPLEVEL || plugin.renderer != uploadedFor)
 			return;
@@ -1150,9 +1085,7 @@ public class RecreatedSceneRenderer {
 		}
 	}
 
-	/**
-	 * Draw the recreated zone's transparent models, right after 117 HD has drawn the real zone's
-	 */
+	/** Draw the recreated zone's transparent models right after the real zone's */
 	public void afterDrawZoneAlpha(Scene scene, int level, int zx, int zz) throws IllegalAccessException {
 		Zone zone = getDrawableZone(scene, zx, zz);
 		var root = sceneManager.getRoot();
@@ -1163,11 +1096,11 @@ public class RecreatedSceneRenderer {
 		var cmd = renderer.sceneCmd;
 		cmd.Enable(GL_BLEND);
 
-		// The water's surface, drawn with the water shader like ZoneRenderer.drawZoneAlpha draws real water
+		// Like ZoneRenderer.drawZoneAlpha draws water
 		if (zone.hasWater && zone.inSceneFrustum && root.minLevel == 0 && level == 0) {
-			cmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) WATER_PROGRAM.get(renderer));
+			cmd.SetShader((ShaderProgram) WATER_PROGRAM.get(renderer));
 			zone.renderOpaqueLevel(cmd, Zone.LEVEL_WATER_SURFACE);
-			cmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) SCENE_PROGRAM.get(renderer));
+			cmd.SetShader((ShaderProgram) SCENE_PROGRAM.get(renderer));
 		}
 
 		if (zone.alphaModels.isEmpty())
@@ -1175,16 +1108,16 @@ public class RecreatedSceneRenderer {
 
 		if (castsShadows(renderer) && zone.inShadowFrustum) {
 			var program = plugin.configShadowMode == ShadowMode.DETAILED ? DETAILED_SHADOW_PROGRAM : FAST_SHADOW_PROGRAM;
-			renderer.directionalCmd.SetShader((rs117.hd.opengl.shader.ShaderProgram) program.get(renderer));
+			renderer.directionalCmd.SetShader((ShaderProgram) program.get(renderer));
 			zone.renderAlpha(renderer.directionalCmd, zx - offset, zz - offset, level, root, true, SHOULD_DRAW_ROOF_SHADOWS.getBoolean(renderer));
 		}
 
-		// Order the zone's models back to front, as 117 HD does for its own zones
+		// Back to front
 		if (level == 0 && zone.inSceneFrustum)
 			zone.alphaSort(zx - offset, zz - offset, renderer.sceneCamera);
 
 		if (zone.inSceneFrustum) {
-			// Like 117 HD's own static alpha: first blend the colors without writing depth, then write depth without color
+			// Like 117 HD's static alpha: colour without depth, then depth without colour
 			cmd.DepthMask(false);
 			cmd.ColorMask(true, true, true, true);
 			zone.renderAlpha(cmd, zx - offset, zz - offset, level, root, false, false);
@@ -1208,12 +1141,14 @@ public class RecreatedSceneRenderer {
 		return ((SkyRenderer) SKY_RENDERER.get(renderer)).castsShadows;
 	}
 
-	/**
-	 * Drop a zone whose buffers went with the renderer that made them, without deleting anything that may now be someone else's
-	 */
+	/** Drop a zone whose buffers went with its renderer, without deleting what may now be someone else's */
 	private static void forget(Zone zone) {
 		zone.glVao = 0;
 		zone.glVaoA = 0;
+		// Zeroed so they aren't reported as leaked once collected, since their context already freed them
+		for (GLBuffer buffer : new GLBuffer[] { zone.vboO, zone.vboA, zone.vboM, zone.tboF })
+			if (buffer != null)
+				buffer.id = 0;
 		zone.vboO = zone.vboA = zone.vboM = null;
 		zone.tboF = null;
 		zone.initialized = false;

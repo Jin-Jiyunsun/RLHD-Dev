@@ -21,20 +21,16 @@ import static net.runelite.api.Perspective.*;
 import static rs117.hd.utils.MathUtils.*;
 
 /**
- * Developer tools: blends a recreated floor's tiles into each other, the way 117 HD's ProceduralGenerator blends the real
- * ground. Corners shared by neighbouring tiles get one smoothed normal, colour and ground material, picked from all the
- * tiles meeting there, and corners where overlays meet underlays are marked for the shader to blend between them. Water
- * gets sunk deeper the further it is from the shore, and its corners meeting land are marked for the shoreline's foam.
- * <p>
- * Corners are matched by where they are in the recreated floor, including their height, so tiles on different levels
- * don't blend into each other.
+ * Blends a recreated floor like ProceduralGenerator blends the real ground: shared corners get one smoothed normal,
+ * colour & material, overlay edges are marked, and water is sunk with foam at the shore. Corners are matched by
+ * position & height, so different levels don't blend.
  */
 class RecreatedFloorBlending {
 	private static final int OVERRIDE_MAIN = 0;
 	private static final int OVERRIDE_OVERLAY = 2;
 	private static final short[] NO_NORMAL = new short[3];
 
-	// Each tile's main, underlay & overlay tile overrides, and the tiles whose main override was found by their overlay
+	// Main, underlay & overlay overrides, and the tiles whose main one was found by their overlay
 	private final Map<FloorTile, TileOverride[]> overrides = new IdentityHashMap<>();
 	private final Set<FloorTile> overlayMainTiles;
 	private final Map<Long, float[]> normals = new HashMap<>();
@@ -43,7 +39,7 @@ class RecreatedFloorBlending {
 	private final Set<Long> overlayCorners = new HashSet<>();
 	private final Set<Long> underlayCorners = new HashSet<>();
 	private final Set<Long> highPriorityColors = new HashSet<>();
-	// The water type of a tile's triangle with its override & texture, like ProceduralGenerator.seasonalWaterType
+	// Like ProceduralGenerator.seasonalWaterType
 	private final BiFunction<TileOverride, Integer, WaterType> waterTypes;
 	private final Set<Long> waterCorners = new HashSet<>();
 	private final Set<Long> landCorners = new HashSet<>();
@@ -66,17 +62,13 @@ class RecreatedFloorBlending {
 			addTerrainData(tile);
 	}
 
-	/**
-	 * The tile's main, underlay & overlay tile overrides, or none if the capture didn't save where it was
-	 */
+	/** The tile's main, underlay & overlay tile overrides, or none if the capture didn't save where it was */
 	@Nullable
 	TileOverride[] getOverrides(FloorTile tile) {
 		return overrides.get(tile);
 	}
 
-	/**
-	 * Like ProceduralGenerator.useDefaultColor: whether the tile keeps its own colour instead of blending
-	 */
+	/** Like ProceduralGenerator.useDefaultColor: whether the tile keeps its own colour instead of blending */
 	static boolean useDefaultColor(FloorTile tile, int triangle, TileOverride override) {
 		if (isPainted(tile) ? tile.textures != null && tile.textures[triangle] >= 0 : hasTextures(tile))
 			return true;
@@ -85,34 +77,25 @@ class RecreatedFloorBlending {
 		return !override.blended;
 	}
 
-	/**
-	 * Whether a painted tile's main override was found by its overlay, which it blends as
-	 */
+	/** Whether a painted tile's main override was found by its overlay, which it blends as */
 	boolean isMainOverlay(FloorTile tile) {
 		return overlayMainTiles.contains(tile);
 	}
 
-	/**
-	 * The water type of a tile's triangle, or none if it isn't water
-	 */
+	/** The water type of a tile's triangle, or none if it isn't water */
 	WaterType getWaterType(FloorTile tile, int triangle) {
 		TileOverride[] tileOverrides = overrides.get(tile);
-		int type = tile.overrideTypes == null ? OVERRIDE_MAIN : tile.overrideTypes[triangle];
-		var override = tileOverrides == null ? TileOverride.NONE : tileOverrides[type];
-		int texture = tile.textures == null ? -1 : tile.textures[triangle];
+		var override = tileOverrides == null ? TileOverride.NONE : tileOverrides[tile.overrideType(triangle)];
+		int texture = tile.texture(triangle);
 		return waterTypes.apply(override, texture);
 	}
 
-	/**
-	 * How far below the water's surface the ground at the corner is sunk
-	 */
+	/** How far below the water's surface the ground at the corner is sunk */
 	int getUnderwaterDepth(long corner) {
 		return underwaterDepths.getOrDefault(corner, 0);
 	}
 
-	/**
-	 * Whether water meets land at the corner, where the water shader draws foam
-	 */
+	/** Whether water meets land at the corner, where the water shader draws foam */
 	boolean isShore(long corner) {
 		return waterCorners.contains(corner) && landCorners.contains(corner);
 	}
@@ -125,16 +108,12 @@ class RecreatedFloorBlending {
 		return materials.getOrDefault(corner, material);
 	}
 
-	/**
-	 * Whether an overlay and an underlay meet at the corner, for the shader to blend between them
-	 */
+	/** Whether an overlay and an underlay meet at the corner, for the shader to blend between them */
 	boolean isOverlayEdge(long corner) {
 		return overlayCorners.contains(corner) && underlayCorners.contains(corner);
 	}
 
-	/**
-	 * The corner's smoothed normal, or the given one if it has none
-	 */
+	/** The corner's smoothed normal, or the given one if it has none */
 	short[] getNormal(long corner, short[] result, short[] defaultNormal) {
 		float[] n = normals.get(corner);
 		float length = n == null ? 0 : n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
@@ -149,9 +128,7 @@ class RecreatedFloorBlending {
 		return result;
 	}
 
-	/**
-	 * Where a corner of a tile's triangle is in the recreated floor, with its height
-	 */
+	/** Where a corner of a tile's triangle is in the recreated floor, with its height */
 	static long cornerKey(FloorTile tile, int vertex) {
 		return cornerKey(
 			tile.tileExX * LOCAL_TILE_SIZE + tile.vertices[vertex * 3],
@@ -181,12 +158,9 @@ class RecreatedFloorBlending {
 		return tile.vertices[vertex * 3] % LOCAL_TILE_SIZE == 0 && tile.vertices[vertex * 3 + 2] % LOCAL_TILE_SIZE == 0;
 	}
 
-	/**
-	 * Like ProceduralGenerator's UnderwaterTerrainGenerator: mark which corners are water & land, then sink water corners
-	 * a level deeper for each ring of water around them, and interpolate the depth of corners inside shaped tiles
-	 */
+	/** Like UnderwaterTerrainGenerator: sink water a level per ring from the shore, interpolating shaped tiles */
 	private void addWater(List<FloorTile> floor) {
-		// Depth levels of the corners on the tile grid, where 0 is land and 1 the water at the shore
+		// Depth levels on the tile grid: 0 is land, 1 the water at the shore
 		Map<Long, Integer> levels = new HashMap<>();
 		Set<Long> landGrid = new HashSet<>();
 		List<FloorTile> waterTiles = new ArrayList<>();
@@ -197,7 +171,7 @@ class RecreatedFloorBlending {
 				int triangle = corner / 3;
 				long key = cornerKey(tile, corner);
 				if (getWaterType(tile, triangle) == WaterType.NONE) {
-					int type = tile.overrideTypes == null ? OVERRIDE_MAIN : tile.overrideTypes[triangle];
+					int type = tile.overrideType(triangle);
 					boolean forced = tileOverrides != null && tileOverrides[type].forced;
 					if (tile.colors[corner] != HDUtils.HIDDEN_HSL || forced)
 						landCorners.add(key);
@@ -217,7 +191,6 @@ class RecreatedFloorBlending {
 			return;
 		levels.keySet().removeAll(landGrid);
 
-		// Sink water further from the shore, a level at a time, like ProceduralGenerator does across the scene
 		List<Long> water = new ArrayList<>(levels.keySet());
 		water.sort(Comparator.<Long>comparingLong(RecreatedFloorBlending::cornerX).thenComparingLong(RecreatedFloorBlending::cornerZ));
 		for (int pass = 0; pass < ProceduralGenerator.DEPTH_LEVEL_SLOPE.length - 1; pass++) {
@@ -234,7 +207,7 @@ class RecreatedFloorBlending {
 		}
 
 		for (var tile : waterTiles) {
-			// The depths at the tile's corners, for corners inside it to be interpolated from
+			// For interpolating corners inside the tile
 			int[] cornerDepths = new int[4];
 			for (int corner = 0; corner < tile.colors.length; corner++) {
 				if (!isOnTileCorner(tile, corner))
@@ -261,9 +234,7 @@ class RecreatedFloorBlending {
 		}
 	}
 
-	/**
-	 * The same as ProceduralGenerator's getHeightOffset
-	 */
+	/** Like ProceduralGenerator's getHeightOffset */
 	private static int getDepth(int level) {
 		if (level == 0)
 			return 0;
@@ -283,9 +254,7 @@ class RecreatedFloorBlending {
 		return false;
 	}
 
-	/**
-	 * Like ProceduralGenerator's TerrainNormalGenerator: add each triangle's surface normal to its corners
-	 */
+	/** Like TerrainNormalGenerator */
 	private void addNormals(FloorTile tile) {
 		int[] a = new int[3], b = new int[3], c = new int[3], normal = new int[3];
 		int[] v = tile.vertices;
@@ -306,10 +275,7 @@ class RecreatedFloorBlending {
 		}
 	}
 
-	/**
-	 * Like ProceduralGenerator's TerrainDataGenerator: give each corner a colour & ground material from the tiles meeting
-	 * there, preferring overlays, and approximately undoing vanilla's tile lighting
-	 */
+	/** Like TerrainDataGenerator: corner colours & materials from the tiles meeting there, preferring overlays */
 	private void addTerrainData(FloorTile tile) {
 		TileOverride[] tileOverrides = overrides.get(tile);
 		int[] worldPos = tile.worldPos;
@@ -320,9 +286,9 @@ class RecreatedFloorBlending {
 		short[] normal = new short[3];
 		for (int corner = 0; corner < tile.colors.length; corner++) {
 			int triangle = corner / 3;
-			int type = tile.overrideTypes == null ? OVERRIDE_MAIN : tile.overrideTypes[triangle];
+			int type = tile.overrideType(triangle);
 			var override = tileOverrides[type];
-			// Skip water, which isn't recreated
+			// Water's ground has its own colour & material
 			if (override.waterType != WaterType.NONE)
 				continue;
 
@@ -335,7 +301,7 @@ class RecreatedFloorBlending {
 			if (color < 0 || color == HDUtils.HIDDEN_HSL && !override.forced)
 				continue;
 
-			// Near-solid-black tiles used in some places under wall objects only colour corners nothing else colours
+			// Near-black tiles under some walls only colour corners nothing else does
 			boolean lowPriorityColor = color <= 2;
 
 			long key = cornerKey(tile, corner);

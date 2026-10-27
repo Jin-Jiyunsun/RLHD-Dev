@@ -38,32 +38,28 @@ import rs117.hd.utils.ModelHash;
 
 import static rs117.hd.utils.MathUtils.*;
 
-/**
- * Spawns objects, plays spotanims and fires projectiles purely visually on the client, for tuning their textures & lights.
- * Driven by the {@link ObjectSpawnerPanel} sidebar.
- */
+/** Spawns objects, plays spotanims & fires projectiles purely visually, for tuning textures & lights */
 @Slf4j
 @Singleton
 public class SpawnerTools {
-	// Default flight settings for test projectiles, in the units used by the client. Heights are above the ground.
+	// Test projectiles' flight, in client units, with heights above the ground
 	// Land on the target tile's ground
 	private static final int TEST_PROJECTILE_END_HEIGHT = 0;
-	// How much projectiles arc on the way, lower is flatter
+	// Lower is flatter
 	private static final int TEST_PROJECTILE_SLOPE = 10;
 	private static final int TEST_PROJECTILE_START_POS = 64;
 	private static final int TEST_PROJECTILE_BASE_CYCLES = 20;
 	private static final int TEST_PROJECTILE_CYCLES_PER_TILE = 5;
 	private static final int TEST_PROJECTILE_LOOP_DELAY = 25;
 
-	// Objects' definitions are in this group of the client's config cache index
 	private static final int OBJECT_CONFIG_GROUP = 6;
-	// Spread decoding every object's definition over a few ticks, to avoid a hitch
+	// Spread over a few ticks, to avoid a hitch
 	private static final long TEST_OBJECT_DEFINITION_NANOS_PER_TICK = 2_000_000;
-	// How often to check whether lights.json or model_overrides.json have been reloaded, in client ticks
+	// Client ticks between checks for lights.json or model_overrides.json reloads
 	private static final int HD_CONFIG_CHECK_TICKS = 50;
 
 	private static final int TEST_SPOTANIM_SLOT = 0;
-	// Pause between loops in client cycles (20 ms each), long enough for the previous lights to be marked for removal
+	// Client cycles, long enough for the previous lights to be marked for removal
 	private static final int TEST_SPOTANIM_LOOP_DELAY = 50;
 
 	@Inject
@@ -130,13 +126,12 @@ public class SpawnerTools {
 	@Nullable
 	private Projectile testProjectile;
 	private volatile int testProjectileDistance = 10;
-	// Height above the ground which test projectiles start from, set from the sidebar
 	private volatile int testProjectileStartHeight = 150;
 	private final AtomicInteger testProjectilePreviewRequest = new AtomicInteger();
 	private RuneLiteObject testObjectPreview;
 	private int testObjectPreviewId = -1;
 	private final AtomicInteger testObjectPreviewRequest = new AtomicInteger();
-	// Every object definition with models, decoded from the client's cache for the sidebar once, then kept
+	// Decoded once for the sidebar
 	@Nullable
 	private Map<Integer, TestObjectDefinition> testObjectDefinitions;
 	@Nullable
@@ -153,8 +148,7 @@ public class SpawnerTools {
 		testObjectLights.startUp();
 		sceneTools.startUp();
 
-		// Swing components must only be created and modified on the Swing thread. The spawner must stay developer-mode only,
-		// since RuneLite's plugin rules reject user-entered IDs and spawned content for normal users.
+		// Developer mode only, since RuneLite's plugin rules reject spawned content for normal users
 		if (developerMode) {
 			SwingUtilities.invokeLater(() -> {
 				if (objectSpawnerButton != null)
@@ -162,7 +156,7 @@ public class SpawnerTools {
 				objectSpawnerButton = NavigationButton.builder()
 					.tooltip("117 HD Spawner")
 					.icon(ObjectSpawnerPanel.createIcon())
-					// Sorted by ascending priority, so this goes right below RuneLite's configuration button at priority 0
+					// Right below RuneLite's configuration button
 					.priority(1)
 					.panel(objectSpawnerPanel = new ObjectSpawnerPanel(this, sceneTools))
 					.build();
@@ -196,8 +190,7 @@ public class SpawnerTools {
 
 	@Subscribe
 	public void onPluginChanged(PluginChanged event) {
-		// 117 HD stopping takes its renderer with it, so remove everything, including the render callbacks hiding the scene,
-		// which would otherwise keep hiding it without 117 HD
+		// 117 HD's renderer goes with it, so remove everything, including the render callbacks hiding the scene
 		if (!(event.getPlugin() instanceof HdPlugin) || event.isLoaded())
 			return;
 		clientThread.invoke(() -> {
@@ -210,7 +203,7 @@ public class SpawnerTools {
 
 	@Subscribe
 	public void onGameStateChanged(GameStateChanged gameStateChanged) {
-		// Test objects are positioned in local coordinates, which change meaning when a new scene loads
+		// Local coordinates change meaning when a new scene loads
 		if (gameStateChanged.getGameState() != GameState.LOADING)
 			return;
 		stopTestProjectile();
@@ -236,7 +229,7 @@ public class SpawnerTools {
 		ActorSpotAnim spotanim = findTestSpotanim(player);
 		if (spotanim != null) {
 			testSpotanimRestartCycle = -1;
-			// Record when each frame starts during the first play, relative to the spotanim's start cycle
+			// Record when each frame starts during the first play
 			int elapsedCycles = client.getGameCycle() - spotanim.getStartCycle();
 			if (testSpotanimFrameTimes != null && elapsedCycles >= 0 && spotanim.getFrame() != testSpotanimLastFrame) {
 				testSpotanimLastFrame = spotanim.getFrame();
@@ -276,7 +269,7 @@ public class SpawnerTools {
 	private void startTestSpotanim(int id, boolean loop, boolean recordTimeline) {
 		if (!developerMode)
 			return;
-		// Start from the beginning, including the lights, even when replacing the same spotanim or its preview
+		// From the beginning, lights included, even when replacing the same spotanim
 		int previousId = testSpotanimId;
 		stopTestSpotanim();
 		Player player = client.getLocalPlayer();
@@ -285,7 +278,7 @@ public class SpawnerTools {
 
 		testSpotanimId = id;
 		testSpotanimLoop = loop;
-		// Previews skip recording, so hovering doesn't post a timeline to the chat
+		// So hovering doesn't post a timeline
 		testSpotanimFrameTimes = recordTimeline ? new ArrayList<>() : null;
 		testSpotanimLastFrame = -1;
 		playTestSpotanim();
@@ -299,9 +292,7 @@ public class SpawnerTools {
 		postMessage("Playing spotanim " + (name == null ? id : name + " (" + id + ")") + (loop ? ", looping" : ""));
 	}
 
-	/**
-	 * Play a spotanim on the local player. Can be called from any thread.
-	 */
+	/** Play a spotanim on the local player. Any thread. */
 	public void playSpotanim(int id, boolean loop) {
 		clientThread.invoke(() -> {
 			if (client.getLocalPlayer() == null) {
@@ -318,9 +309,7 @@ public class SpawnerTools {
 		postSpotanimFrameTimings = post;
 	}
 
-	/**
-	 * Change whether the playing test spotanim loops, unless it's a hover preview. Can be called from any thread.
-	 */
+	/** Whether the playing test spotanim loops, unless it's a preview. Any thread. */
 	public void setSpotanimLoop(boolean loop) {
 		clientThread.invoke(() -> {
 			if (testSpotanimId != -1 && !testSpotanimIsPreview)
@@ -328,10 +317,7 @@ public class SpawnerTools {
 		});
 	}
 
-	/**
-	 * Show a looping preview of the spotanim on the local player, replacing whichever test spotanim is playing.
-	 * Can be called from any thread.
-	 */
+	/** Preview a spotanim looping on the local player, replacing any test spotanim. Any thread. */
 	public void previewSpotanim(int id) {
 		int request = testSpotanimPreviewRequest.incrementAndGet();
 		clientThread.invoke(() -> {
@@ -358,9 +344,7 @@ public class SpawnerTools {
 		});
 	}
 
-	/**
-	 * Read the spotanim gamevals off the client thread, then pass them to the callback on the Swing thread.
-	 */
+	/** Read the spotanim gamevals off the client thread, for the callback on the Swing thread */
 	public void loadSpotanimNames(Consumer<Map<String, Integer>> callback) {
 		executor.execute(() -> {
 			Map<String, Integer> spotanims;
@@ -380,12 +364,11 @@ public class SpawnerTools {
 		if (player == null)
 			return;
 
-		// Replays, such as loops, need fresh lights rather than the previous play's, which may still be fading out
+		// Replays need fresh lights, while the previous play's may still be fading out
 		hdInternals.removeSpotanimLightsImmediately(player, testSpotanimId);
 		player.createSpotAnim(TEST_SPOTANIM_SLOT, testSpotanimId, 0, 0);
 
-		// Client-side spotanims don't notify plugins, so let the LightManager know to attach lights. This goes to it
-		// directly rather than through the event bus, so other plugins never mistake the test spotanim for a real one.
+		// Client-side spotanims don't notify plugins, so tell the LightManager directly, unseen by other plugins
 		GraphicChanged changed = new GraphicChanged();
 		changed.setActor(player);
 		lightManager.onGraphicChanged(changed);
@@ -406,12 +389,10 @@ public class SpawnerTools {
 		testSpotanimFrameTimes = null;
 	}
 
-	/**
-	 * Spawn a test object with the given object ID at the local player's location. Can be called from any thread.
-	 */
+	/** Spawn a test object at the local player. Any thread. */
 	public void spawnTestObject(int objectId) {
 		withTestObjectDefinition(objectId, true, def -> {
-			// Keep the preview of the same object instead of spawning a duplicate on top of it
+			// Keep the same object's preview instead of spawning a duplicate
 			RuneLiteObject object;
 			if (testObjectPreview != null && testObjectPreviewId == objectId) {
 				object = testObjectPreview;
@@ -449,9 +430,7 @@ public class SpawnerTools {
 		});
 	}
 
-	/**
-	 * Rotate a spawned test object in 90 degree steps, like real objects
-	 */
+	/** Rotate a spawned test object in 90 degree steps, like real objects */
 	public void rotateTestObject(int handle, int quarterTurns) {
 		clientThread.invoke(() -> {
 			var spawned = spawnedTestObjects.get(handle);
@@ -479,10 +458,7 @@ public class SpawnerTools {
 		SwingUtilities.invokeLater(() -> panel.setSpawnedObjects(infos));
 	}
 
-	/**
-	 * Send the sidebar which IDs have lights or model overrides whenever they change, since they load in the background
-	 * at startup and again whenever their JSON files are saved. 117 HD doesn't say when that happens, so check every so often.
-	 */
+	/** Send the sidebar which IDs have lights or model overrides when they change, which 117 HD doesn't announce */
 	private void updateSpawnerHdConfigIds() {
 		var panel = objectSpawnerPanel;
 		int tick = client.getGameCycle();
@@ -504,9 +480,7 @@ public class SpawnerTools {
 		SwingUtilities.invokeLater(() -> panel.setHdConfigIds(ids));
 	}
 
-	/**
-	 * Fire a projectile from the local player to the tile the configured distance ahead. Can be called from any thread.
-	 */
+	/** Fire a projectile from the local player to the tile the set distance ahead. Any thread. */
 	public void playProjectile(int id, boolean loop) {
 		clientThread.invoke(() -> {
 			if (client.getLocalPlayer() == null) {
@@ -523,9 +497,7 @@ public class SpawnerTools {
 		});
 	}
 
-	/**
-	 * Keep firing the projectile as a preview, replacing whichever test projectile is active. Can be called from any thread.
-	 */
+	/** Keep firing a projectile as a preview, replacing any test projectile. Any thread. */
 	public void previewProjectile(int id) {
 		int request = testProjectilePreviewRequest.incrementAndGet();
 		clientThread.invoke(() -> {
@@ -579,7 +551,7 @@ public class SpawnerTools {
 	}
 
 	private void stopTestProjectile() {
-		// End the flight early, so the client removes it along with its lights
+		// So the client removes it along with its lights
 		if (testProjectile != null && testProjectile.getRemainingCycles() > 0)
 			testProjectile.setEndCycle(client.getGameCycle());
 		testProjectile = null;
@@ -614,7 +586,7 @@ public class SpawnerTools {
 		if (player == null)
 			return;
 
-		// Aim at the tile the set distance ahead, in the direction the player is facing (0 = south, 512 = west)
+		// Facing 0 = south, 512 = west
 		WorldPoint source = player.getWorldLocation();
 		double angle = player.getOrientation() * JAU_TO_RAD;
 		int distance = testProjectileDistance;
@@ -622,7 +594,6 @@ public class SpawnerTools {
 			.dx((int) Math.round(-Math.sin(angle) * distance))
 			.dy((int) Math.round(-Math.cos(angle) * distance));
 
-		// Purely visual: a client-side projectile isn't sent to the server
 		int cycle = client.getGameCycle();
 		Projectile projectile = client.createProjectile(
 			testProjectileId,
@@ -641,8 +612,7 @@ public class SpawnerTools {
 		testProjectile = projectile;
 		testProjectileFired = true;
 
-		// Client-side projectiles may not notify plugins, so let the LightManager know to attach lights. This goes to it
-		// directly rather than through the event bus, so other plugins never mistake the test projectile for a real one.
+		// Client-side projectiles may not notify plugins, so tell the LightManager directly, unseen by other plugins
 		ProjectileMoved moved = new ProjectileMoved();
 		moved.setProjectile(projectile);
 		moved.setPosition(LocalPoint.fromWorld(client.getTopLevelWorldView(), target));
@@ -650,14 +620,11 @@ public class SpawnerTools {
 		lightManager.onProjectileMoved(moved);
 	}
 
-	/**
-	 * Show a temporary preview of the object at the local player's location, replacing any previous preview.
-	 * Can be called from any thread.
-	 */
+	/** Preview an object at the local player, replacing any previous preview. Any thread. */
 	public void previewTestObject(int objectId) {
 		int request = testObjectPreviewRequest.incrementAndGet();
 		withTestObjectDefinition(objectId, false, def -> {
-			// Skip previews which have already been replaced or cleared while loading
+			// Replaced or cleared while loading
 			if (request != testObjectPreviewRequest.get())
 				return;
 			removeTestObjectPreview();
@@ -691,9 +658,7 @@ public class SpawnerTools {
 		});
 	}
 
-	/**
-	 * Decode one object's definition from the cache data the client has loaded. Must be called on the client thread.
-	 */
+	/** Decode an object's definition from the client's cache data. Client thread only. */
 	@Nullable
 	TestObjectDefinition readTestObjectDefinition(int objectId) {
 		assert client.isClientThread();
@@ -704,10 +669,7 @@ public class SpawnerTools {
 		return data == null ? null : ObjectDefinitionParser.parse(objectId, data);
 	}
 
-	/**
-	 * Decode every object with models for the sidebar, then pass them to the callback on the Swing thread.
-	 * The callback receives null if the client's cache data couldn't be read. Can be called from any thread.
-	 */
+	/** Decode every object with models for the callback on the Swing thread, or null if unreadable. Any thread. */
 	public void loadTestObjectDefinitions(Consumer<Map<Integer, TestObjectDefinition>> callback) {
 		clientThread.invoke(() -> {
 			var definitions = testObjectDefinitions;
@@ -719,7 +681,7 @@ public class SpawnerTools {
 			if (testObjectDefinitionLoad != null || loadingTestObjectNames)
 				return;
 
-			// Read the gameval names off the client thread, then decode the definitions a batch per tick
+			// Gamevals off the client thread, then a batch of definitions per tick
 			loadingTestObjectNames = true;
 			executor.execute(() -> {
 				Map<Integer, String> names = new HashMap<>();
@@ -748,7 +710,6 @@ public class SpawnerTools {
 
 		long deadline = System.nanoTime() + TEST_OBJECT_DEFINITION_NANOS_PER_TICK;
 		for (int decoded = 0; load.next < load.ids.length; load.next++, decoded++) {
-			// Checking the time every so often is enough, and cheaper than every definition
 			if (decoded % 100 == 0 && decoded > 0 && System.nanoTime() > deadline)
 				break;
 			int id = load.ids[load.next];
@@ -811,8 +772,7 @@ public class SpawnerTools {
 				postMessage("The player isn't in the loaded scene");
 			return null;
 		}
-		// The renderer recognises test objects by their exact position, so give each its own, off the tile centre where
-		// game graphics usually sit. Each step is 1/128 of a tile, far too small to see.
+		// Test objects are recognised by exact position, so give each its own, off the tile centre, in invisible steps
 		do {
 			location = location.dx(1);
 		} while (testObjectRenderer.isTestObjectAt(location.getX(), location.getY()));
@@ -821,11 +781,8 @@ public class SpawnerTools {
 	}
 
 	/**
-	 * Build an object's model from some of its model IDs, applying the definition's model changes like the client does.
-	 * Mirroring, the 45 degree turn of diagonal wall decorations and finishing the model in place of scaling & offsetting
-	 * it are for objects recreated from a scene capture, which the client builds from more than the centrepiece model.
-	 * The client lights a model after turning it, so a model turned by quarter turns when drawn is lit from the opposite
-	 * direction, to end up lit the same way.
+	 * Build a model with the definition's model changes like the client. Mirroring, diagonal turns & finishing are for
+	 * recreated objects. Models turned when drawn are lit turned the other way, to end up lit like the client's.
 	 */
 	@Nullable
 	Model buildTestObjectModel(
@@ -847,7 +804,6 @@ public class SpawnerTools {
 			}
 		}
 
-		// Apply the object definition's model changes the same way the client does
 		ModelData modelData = models.length == 1 && !mirror && !diagonal ? models[0] : client.mergeModels(models);
 		if (mirror)
 			SceneCapture.mirror(modelData);
@@ -858,14 +814,14 @@ public class SpawnerTools {
 			for (int i = 0; i < min(def.recolorFrom.length, def.recolorTo.length); i++)
 				modelData.recolor(def.recolorFrom[i], def.recolorTo[i]);
 		}
-		// Models without textures have nothing to retexture, and can't have their textures cloned
+		// Untextured models can't have their textures cloned
 		if (def.retextureFrom != null && def.retextureTo != null && modelData.getFaceTextures() != null) {
 			modelData = modelData.cloneTextures();
 			for (int i = 0; i < min(def.retextureFrom.length, def.retextureTo.length); i++)
 				modelData.retexture(def.retextureFrom[i], def.retextureTo[i]);
 		}
 		if (finish != null) {
-			// Recreated objects are scaled, offset and more along the world's axes after rotating, like the client does
+			// Along the world's axes after rotating, like the client
 			modelData = finish.apply(modelData.cloneVertices());
 		} else if (def.scale != null || def.offset != null) {
 			modelData = modelData.cloneVertices();
@@ -875,7 +831,7 @@ public class SpawnerTools {
 				modelData.translate(def.offset[0], def.offset[1], def.offset[2]);
 		}
 
-		// Turn the light the other way, the same way ModelData.rotateY90Ccw and the others turn vertices
+		// Like ModelData.rotateY90Ccw and the others turn vertices
 		int lightX = ModelData.DEFAULT_X, lightZ = ModelData.DEFAULT_Z;
 		switch (-drawnQuarterTurns & 3) {
 			case 1:
@@ -900,10 +856,7 @@ public class SpawnerTools {
 		);
 	}
 
-	/**
-	 * Spawn a test object with a built model, for spawned, previewed and animated recreated objects. Its location must be
-	 * free of other test objects, and a null height keeps it on the ground.
-	 */
+	/** Spawn a test object with a built model, where there's no other test object. Null height follows the ground. */
 	@Nullable
 	RuneLiteObject placeTestObject(
 		int objectId,
@@ -916,7 +869,7 @@ public class SpawnerTools {
 	) {
 		if (!developerMode)
 			return null;
-		// Purely visual: a RuneLiteObject has no clickbox or menu entries, and nothing is sent to the server
+		// Purely visual, with no clickbox or menu entries
 		RuneLiteObject object = client.createRuneLiteObject();
 		object.setModel(model);
 		if (def.animation != -1)
@@ -955,9 +908,7 @@ public class SpawnerTools {
 		final String label;
 	}
 
-	/**
-	 * A snapshot of a spawned test object for the sidebar, safe to use on the Swing thread
-	 */
+	/** A spawned test object for the sidebar, safe on the Swing thread */
 	@RequiredArgsConstructor
 	public static class SpawnedObjectInfo {
 		public final int handle;
@@ -966,9 +917,7 @@ public class SpawnerTools {
 		public final int rotationDegrees;
 	}
 
-	/**
-	 * IDs with lights.json lights or model_overrides.json overrides, per kind of entry in the sidebar
-	 */
+	/** IDs with lights or model overrides, per kind of sidebar entry */
 	@lombok.Value
 	public static class HdConfigIds {
 		public Set<Integer> objectLights;
@@ -985,7 +934,7 @@ public class SpawnerTools {
 
 		int[] last = frameTimes.get(frameTimes.size() - 1);
 
-		// Maya animations advance one frame per client tick, so a full timeline would just be frame * tick length
+		// Maya animations advance one frame per client tick
 		boolean onePerTick = frameTimes.stream().allMatch(e -> e[1] == e[0] * Constants.CLIENT_TICK_LENGTH);
 		if (onePerTick) {
 			postMessage(String.format(

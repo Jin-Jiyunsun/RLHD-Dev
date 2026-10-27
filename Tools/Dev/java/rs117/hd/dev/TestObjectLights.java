@@ -23,11 +23,8 @@ import rs117.hd.utils.ModelHash;
 import static rs117.hd.utils.MathUtils.*;
 
 /**
- * Gives test objects, and the objects & NPCs of a recreated scene capture, the lights.json lights of the IDs they stand in for.
- * <p>
- * 117 HD removes an object's lights as soon as the object isn't in the scene, which test objects never are. So instead,
- * their lights are added to 117 HD without a parent, which 117 HD keeps until they're marked for removal. They're kept
- * facing the same way as their object here, and added again whenever 117 HD reloads its lights.
+ * Gives test & recreated objects the lights of the IDs they stand in for, added without a parent since 117 HD drops
+ * lights of objects not in the scene. Kept in place here, and added again whenever 117 HD reloads its lights.
  */
 @Singleton
 public class TestObjectLights {
@@ -46,11 +43,12 @@ public class TestObjectLights {
 	@Inject
 	private TestObjectRenderer testObjectRenderer;
 
-	// The lights given to test objects, which may no longer be in 117 HD's list if it has reloaded its lights since
+	// May no longer be in 117 HD's list after it reloads its lights
 	private final Map<Light, RuneLiteObject> testObjectLights = new IdentityHashMap<>();
-	// The same for a recreated scene's static objects & NPCs, which never move
+	// Recreated static objects & NPCs, which never move
 	private final Map<Light, StaticObject> staticObjectLights = new IdentityHashMap<>();
 	private List<StaticObject> staticObjects = List.of();
+	private Set<StaticObject> staticObjectSet = Set.of();
 
 	public void startUp() {
 		eventBus.register(this);
@@ -61,11 +59,11 @@ public class TestObjectLights {
 		removeAll();
 	}
 
-	/**
-	 * Light a recreated scene's static objects & NPCs, replacing those lit before, whose lights fade out
-	 */
+	/** Light a recreated scene's static objects & NPCs, fading out those lit before */
 	public void setStaticObjects(List<StaticObject> objects) {
 		staticObjects = objects;
+		staticObjectSet = Collections.newSetFromMap(new IdentityHashMap<>());
+		staticObjectSet.addAll(objects);
 	}
 
 	@Subscribe
@@ -73,8 +71,12 @@ public class TestObjectLights {
 		if (plugin.getSceneContext() == null)
 			return;
 
-		var lights = hdInternals.getLights();
 		var testObjects = testObjectRenderer.getTestObjects();
+		// Nothing to light or fade out
+		if (testObjects.isEmpty() && testObjectLights.isEmpty() && staticObjects.isEmpty() && staticObjectLights.isEmpty())
+			return;
+
+		var lights = hdInternals.getLights();
 		updateLights(
 			lights,
 			testObjectLights,
@@ -87,15 +89,13 @@ public class TestObjectLights {
 				light.plane = object.getLevel();
 				light.orientation = getLightOrientation(object);
 				light.origin[0] = location.getX();
-				// The object's own height, which it keeps instead of following the ground
+				// Keeps its own height instead of following the ground
 				light.origin[1] = object.getZ() - light.def.height - 1;
 				light.origin[2] = location.getY();
 			}
 		);
 
-		var staticObjects = this.staticObjects;
-		Set<StaticObject> current = Collections.newSetFromMap(new IdentityHashMap<>());
-		current.addAll(staticObjects);
+		var current = staticObjectSet;
 		updateLights(
 			lights,
 			staticObjectLights,
@@ -113,14 +113,7 @@ public class TestObjectLights {
 		);
 	}
 
-	/**
-	 * Keep each object lit while it exists, and fade its lights out once it's gone, like real objects' lights
-	 *
-	 * @param lights      117 HD's lights
-	 * @param objectLights the lights given to objects of this kind, which may no longer be in 117 HD's list if it has
-	 *                    reloaded its lights since
-	 * @param place       positions and turns a light the same way as its object
-	 */
+	/** Keep each object lit while it exists, fading its lights out once it's gone */
 	private static <T> void updateLights(
 		List<Light> lights,
 		Map<Light, T> objectLights,
@@ -151,7 +144,6 @@ public class TestObjectLights {
 		for (var object : objects) {
 			if (lit.contains(object) || !exists.test(object))
 				continue;
-			// Most objects have no lights
 			for (LightDefinition def : definitions.apply(object)) {
 				Light light = new Light(def);
 				place.accept(light, object);
@@ -167,11 +159,10 @@ public class TestObjectLights {
 		testObjectLights.clear();
 		staticObjectLights.clear();
 		staticObjects = List.of();
+		staticObjectSet = Set.of();
 	}
 
-	/**
-	 * Real objects' lights are oriented 1024 + 512 * rotation, so match that for test objects rotated in 90 degree steps
-	 */
+	/** Real objects' lights face 1024 + 512 * rotation */
 	private static int getLightOrientation(RuneLiteObject object) {
 		return mod(1024 + object.getOrientation(), 2048);
 	}

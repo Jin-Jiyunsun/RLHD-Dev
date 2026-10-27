@@ -2,16 +2,14 @@ package rs117.hd.dev.spawner;
 
 import javax.annotation.Nullable;
 
-/**
- * Object models & animations decoded from the client's cache by {@link ObjectDefinitionParser}, used to spawn test objects
- */
+/** An object's models & animation, decoded by {@link ObjectDefinitionParser} */
 public class TestObjectDefinition {
 	@Nullable
 	public String name;
 	@Nullable
 	public String displayName;
 	public int[] models;
-	// Every model with its placement type, or null types if the object only has centrepiece models, for scene captures
+	// Null types if it only has centrepiece models
 	public int[] allModels;
 	@Nullable
 	public int[] modelTypes;

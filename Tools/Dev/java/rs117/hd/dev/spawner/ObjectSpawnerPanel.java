@@ -11,6 +11,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.LayoutManager;
 import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.RenderingHints;
@@ -58,13 +59,10 @@ import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.ui.components.IconTextField;
 
-/**
- * Developer tools sidebar for searching objects, spotanims & projectiles, and spawning them purely visually on the client.
- */
+/** Sidebar for spawning objects, spotanims & projectiles, and capturing & recreating scenes, purely visually. */
 public class ObjectSpawnerPanel extends PluginPanel {
 	private static final int MAX_RESULTS = 500;
-	// The cache doesn't mark which spotanims are projectiles, so besides those HD already configures as projectiles,
-	// guess from names, leaving out effects which play when casting or hitting rather than in flight
+	// Spotanims named like projectiles, except casting & impact effects
 	private static final Pattern PROJECTILE_NAME = Pattern.compile("PROJ|MISSILE|_TRAVEL|_ARROW|BOLT|DART");
 	private static final Pattern NOT_PROJECTILE_NAME = Pattern.compile("LAUNCH|CAST|IMPACT|_HIT|HIT_|DEATH|EXPLO|SPLASH|_END\\b|_END_");
 	// Always list entries in the order they're in the cache
@@ -82,7 +80,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final ImageIcon OVERRIDE_FLAG_ICON = new ImageIcon(createCubeIcon(FLAG_ICON_SIZE, OVERRIDE_FLAG_COLOR));
 	private static final ImageIcon LIGHTS_FLAG_ICON = new ImageIcon(createLightbulbIcon(FLAG_ICON_SIZE));
 	private static final int FILTER_ICON_SIZE = 16;
-	// Long names on the hovered row scroll at this many pixels per second, pausing at each end
+	// Long names on the hovered row scroll, pausing at each end
 	private static final int MARQUEE_SPEED = 40;
 	private static final int MARQUEE_PAUSE_MS = 1000;
 	private static final int MARQUEE_FRAME_MS = 33;
@@ -131,7 +129,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JTextArea statusText = createWrappingText();
 	private final JTextArea projectileDisclaimer = createWrappingText();
 	private final JPanel spawnedSection = new JPanel(new BorderLayout(0, 4));
-	// Keeps the status & spawned objects outside the grid, so they can grow beyond a single grid row
+	// Outside the grid, so the status & spawned objects can be taller than a grid row
 	private final JPanel topSection = new JPanel(new BorderLayout(0, 6));
 	private final JPanel spawnedRows = new SpawnedRowsPanel();
 	private final JLabel listHeader = createHeader("");
@@ -140,7 +138,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JPanel recreatedSceneColumn = new JPanel(new GridLayout(0, 1, 0, 4));
 	private final JTextField sceneNameField = new JTextField();
 	private final JList<String> sceneCaptureList = new JList<>() {
-		// Fit the sidebar's width, cutting long names off rather than widening it
+		// Cut long names off rather than widening the sidebar
 		@Override
 		public boolean getScrollableTracksViewportWidth() {
 			return true;
@@ -155,7 +153,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JToggleButton onlyTestObjectsButton = new JToggleButton("Hide everything else");
 	private final ResultsModel results = new ResultsModel();
 	private final JList<Entry> resultList = new JList<>(results) {
-		// Always fit the sidebar's width, otherwise one long name widens every row and pushes the flags out of view
+		// Cut long names off rather than widening every row and pushing the flags out of view
 		@Override
 		public boolean getScrollableTracksViewportWidth() {
 			return true;
@@ -171,7 +169,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private int marqueeIndex = -1;
 	private long marqueeStartMs;
 	private final Timer marqueeTimer = new Timer(MARQUEE_FRAME_MS, e -> repaintRow(marqueeIndex));
-	// The spawned objects are real components rather than list rows, so their names animate separately
+	// Real components rather than list rows, so their names can scroll separately
 	@Nullable
 	private MarqueeLabel spawnedMarqueeLabel;
 	private final Timer spawnedMarqueeTimer = new Timer(MARQUEE_FRAME_MS, e -> {
@@ -199,7 +197,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		modeRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		for (Mode m : Mode.values()) {
 			JButton button = createButton(m.label);
-			// Fit the labels across the narrow sidebar
 			button.setMargin(new Insets(2, 0, 2, 0));
 			button.addActionListener(e -> setMode(m));
 			modeButtons[m.ordinal()] = button;
@@ -212,7 +209,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		searchBar.setHoverBackgroundColor(ColorScheme.DARK_GRAY_HOVER_COLOR);
 		searchBar.getDocument().addDocumentListener(onDocumentChange(this::updateResults));
 
-		// Only one filter can be on at a time, and clicking the active one turns it off again
+		// One filter at a time, and clicking the active one turns it off
 		filterRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		styleButton(lightsFilterButton);
 		styleButton(overrideFilterButton);
@@ -258,7 +255,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		startHeightSpinner.addChangeListener(e -> spawner.setProjectileStartHeight((Integer) startHeightSpinner.getValue()));
 		spawner.setProjectileStartHeight(DEFAULT_PROJECTILE_START_HEIGHT);
 
-		// Line the number boxes up with each other
 		distanceSpinner.setPreferredSize(startHeightSpinner.getPreferredSize());
 
 		styleButton(clearButton);
@@ -275,7 +271,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 					break;
 				case SCENES:
 					scenes.removeRecreatedSceneAndNotify();
-					// Show everything again, undoing what recreating did
 					setOnlyDrawTestObjects(false);
 					break;
 			}
@@ -286,17 +281,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		projectileDisclaimer.setText("Approximate list: HD's configured projectiles plus names that look like projectiles, " +
 									 "so some may be missing or not actually projectiles");
 
-		// Outline the spawned objects, and divide them from the full list below with a line and some space
 		spawnedSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		spawnedSection.setBorder(createSectionDivider());
 		spawnedRows.setBackground(ColorScheme.DARK_GRAY_COLOR);
 
-		// Always reserve room for a few spawned objects, and scroll once there are more
-		JScrollPane spawnedScroll = new JScrollPane(
-			spawnedRows,
-			JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
-			JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
-		);
+		// Room for a few spawned objects, scrolling once there are more
+		JScrollPane spawnedScroll = createVerticalScroll(spawnedRows);
 		spawnedScroll.setBorder(BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR));
 		spawnedScroll.getViewport().setBackground(ColorScheme.DARK_GRAY_COLOR);
 		spawnedScroll.getVerticalScrollBar().setUnitIncrement(SPAWNED_ROW_HEIGHT);
@@ -322,7 +312,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 				if (entry == null)
 					return;
 				if (SwingUtilities.isRightMouseButton(e)) {
-					// Copy the gameval like the tile info overlay does, ready to paste into a JSON config
+					// Like the tile info overlay, ready to paste into a JSON config
 					resultList.setSelectedValue(entry, false);
 					copyToClipboard(entry.name != null ? '"' + entry.name + '"' : String.valueOf(entry.id));
 				} else if (SwingUtilities.isLeftMouseButton(e)) {
@@ -354,18 +344,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		};
 		resultList.addMouseListener(mouseAdapter);
 		resultList.addMouseMotionListener(mouseAdapter);
-		JScrollPane scrollPane = new JScrollPane(
-			resultList,
-			JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
-			JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
-		);
+		JScrollPane scrollPane = createVerticalScroll(resultList);
 		scrollPane.setBorder(BorderFactory.createEmptyBorder());
 		scrollPane.getVerticalScrollBar().setUnitIncrement(16);
 
 		listSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
-		// Search sits right above the list it filters
-		JPanel listTop = new JPanel(new BorderLayout(0, 4));
-		listTop.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel listTop = createPanel(new BorderLayout(0, 4));
 		listTop.add(listHeader, BorderLayout.NORTH);
 		listTop.add(searchBar, BorderLayout.CENTER);
 
@@ -377,12 +361,10 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			"<html>1000: start from ID 1000<br>1000+100: 100 entries from ID 1000<br>500-679: only IDs 500 to 679<br>" +
 			"A gameval works anywhere an ID does, like TFA_XARTH+100</html>");
 		startFromField.getDocument().addDocumentListener(onDocumentChange(this::updateResults));
-		JPanel startFromRow = new JPanel(new BorderLayout(6, 0));
-		startFromRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel startFromRow = createPanel(new BorderLayout(6, 0));
 		startFromRow.add(startFromLabel, BorderLayout.WEST);
 		startFromRow.add(startFromField, BorderLayout.CENTER);
-		JPanel listControls = new JPanel(new BorderLayout(0, 4));
-		listControls.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel listControls = createPanel(new BorderLayout(0, 4));
 		listControls.add(startFromRow, BorderLayout.NORTH);
 		listControls.add(statusText, BorderLayout.CENTER);
 		listTop.add(listControls, BorderLayout.SOUTH);
@@ -399,7 +381,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 	@Override
 	public void onActivate() {
-		// Retries if the definitions couldn't be read from the client last time
+		// Retries if reading the definitions failed last time
 		spawner.loadTestObjectDefinitions(this::setDefinitions);
 		if (!spotanimsLoaded)
 			spawner.loadSpotanimNames(this::setSpotanims);
@@ -407,15 +389,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			refreshSceneCaptures(null);
 	}
 
-	/**
-	 * Build the tab for capturing the scene to a file, and recreating saved captures in the player's region
-	 */
+	/** Build the tab for capturing the scene to a file, and recreating saved captures in the player's region */
 	private void createScenesSection() {
 		JLabel nameLabel = createLabel("Name");
 		sceneNameField.setBackground(ColorScheme.DARKER_GRAY_COLOR);
 		sceneNameField.putClientProperty("JTextField.placeholderText", "Defaults to environment & time");
-		JPanel nameRow = new JPanel(new BorderLayout(6, 0));
-		nameRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel nameRow = createPanel(new BorderLayout(6, 0));
 		nameRow.add(nameLabel, BorderLayout.WEST);
 		nameRow.add(sceneNameField, BorderLayout.CENTER);
 
@@ -427,8 +406,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			(SceneCapture.Area) areaList.getSelectedItem()
 		));
 
-		JPanel captureColumn = new JPanel(new GridLayout(0, 1, 0, 4));
-		captureColumn.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel captureColumn = createPanel(new GridLayout(0, 1, 0, 4));
 		captureColumn.add(createHeader("Capture scene"));
 		captureColumn.add(nameRow);
 		captureColumn.add(areaList);
@@ -444,7 +422,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		onlyTestObjectsButton.addActionListener(e -> setOnlyDrawTestObjects(onlyTestObjectsButton.isSelected()));
 		recreateButton.addActionListener(e -> recreateSelectedSceneCapture());
 
-		// Saved captures scroll once there are more than fit, and double-clicking one recreates it
+		// Double-clicking a capture recreates it
 		sceneCaptureList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
 		sceneCaptureList.setBackground(ColorScheme.DARKER_GRAY_COLOR);
 		sceneCaptureList.setFont(FontManager.getRunescapeSmallFont());
@@ -457,30 +435,23 @@ public class ObjectSpawnerPanel extends PluginPanel {
 					recreateSelectedSceneCapture();
 			}
 		});
-		JScrollPane sceneCaptureScroll = new JScrollPane(
-			sceneCaptureList,
-			JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
-			JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
-		);
+		JScrollPane sceneCaptureScroll = createVerticalScroll(sceneCaptureList);
 		sceneCaptureScroll.setBorder(BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR));
-		// Three sections in the order they're used: capturing, picking a capture to recreate, then adjusting what's recreated
-		JPanel capturePart = new JPanel(new BorderLayout(0, 4));
-		capturePart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		// Sections in the order they're used: capture, pick a capture, then adjust what's recreated
+		JPanel capturePart = createPanel(new BorderLayout(0, 4));
 		capturePart.setBorder(createSectionDivider());
 		capturePart.add(captureColumn, BorderLayout.NORTH);
 		capturePart.add(captureInfo, BorderLayout.CENTER);
 
-		JPanel savedPart = new JPanel(new BorderLayout(0, 4));
-		savedPart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel savedPart = createPanel(new BorderLayout(0, 4));
 		savedPart.setBorder(createSectionDivider());
-		// Pick up captures added, renamed or deleted in the folder outside the client
+		// Picks up captures changed in the folder outside the client
 		JButton refreshButton = createIconButton(
 			createRotateIcon(true),
 			"Reload saved captures from the folder",
 			() -> refreshSceneCaptures(null)
 		);
-		JPanel savedHeader = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-		savedHeader.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel savedHeader = createPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
 		savedHeader.add(createHeader("Saved captures"));
 		savedHeader.add(Box.createHorizontalStrut(6));
 		savedHeader.add(refreshButton);
@@ -496,17 +467,14 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		JTextArea recreateInfo = createWrappingText();
 		recreateInfo.setText("Recreated scenes line up with your region's grid, keep their height relative to you, use the " +
 							 "captured environment, and stay until removed or the scene reloads");
-		JPanel recreatedPart = new JPanel(new BorderLayout(0, 4));
-		recreatedPart.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel recreatedPart = createPanel(new BorderLayout(0, 4));
 		recreatedPart.add(recreatedSceneColumn, BorderLayout.NORTH);
 		recreatedPart.add(recreateInfo, BorderLayout.CENTER);
 
-		JPanel lowerParts = new JPanel(new BorderLayout(0, 6));
-		lowerParts.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel lowerParts = createPanel(new BorderLayout(0, 6));
 		lowerParts.add(savedPart, BorderLayout.NORTH);
 		lowerParts.add(recreatedPart, BorderLayout.CENTER);
-		JPanel parts = new JPanel(new BorderLayout(0, 6));
-		parts.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		JPanel parts = createPanel(new BorderLayout(0, 6));
 		parts.add(capturePart, BorderLayout.NORTH);
 		parts.add(lowerParts, BorderLayout.CENTER);
 		scenesSection.setBackground(ColorScheme.DARK_GRAY_COLOR);
@@ -514,9 +482,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		updateSceneCaptures(List.of(), null, 0);
 	}
 
-	/**
-	 * Recreate the selected capture, hiding everything else to see it on its own, which saves a step
-	 */
+	/** Recreate the selected capture, hiding everything else to see it on its own */
 	private void recreateSelectedSceneCapture() {
 		String selected = sceneCaptureList.getSelectedValue();
 		if (selected == null)
@@ -538,7 +504,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		);
 		if (choice != JOptionPane.OK_OPTION)
 			return;
-		// Select the next capture along once it's gone
 		int index = sceneCaptureList.getSelectedIndex();
 		sceneCaptureList.clearSelection();
 		scenes.deleteSceneCapture(selected + ".json", () -> refreshSceneCaptures(null, index));
@@ -555,17 +520,13 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		scenes.setOnlyDrawTestObjects(only);
 	}
 
-	/**
-	 * Show whether everything but test objects is hidden, without changing it. Must be called on the Swing thread.
-	 */
+	/** Show whether everything but test objects is hidden. Swing thread only. */
 	public void showOnlyDrawingTestObjects(boolean only) {
 		onlyTestObjectsButton.setSelected(only);
 		setHighlighted(onlyTestObjectsButton, only);
 	}
 
-	/**
-	 * Select a capture once the list has been refreshed, such as one which was just saved. Must be called on the Swing thread.
-	 */
+	/** Select a capture once the list has been refreshed, such as one just saved. Swing thread only. */
 	public void setSelectedSceneCapture(String fileName) {
 		refreshSceneCaptures(fileName);
 	}
@@ -602,15 +563,13 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 	@Override
 	public void removeNotify() {
-		// The panel can be removed while a row is hovered, such as when the plugin stops
+		// The panel can be removed while a row is hovered
 		marqueeTimer.stop();
 		setSpawnedMarqueeLabel(null);
 		super.removeNotify();
 	}
 
-	/**
-	 * Show the spawned test objects, each with buttons to rotate or remove it. Must be called on the Swing thread.
-	 */
+	/** Show the spawned test objects, with buttons to rotate or remove each. Swing thread only. */
 	public void setSpawnedObjects(List<SpawnerTools.SpawnedObjectInfo> spawnedObjects) {
 		setSpawnedMarqueeLabel(null);
 		spawnedRows.removeAll();
@@ -661,7 +620,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		row.add(text, BorderLayout.CENTER);
 		row.add(buttons, BorderLayout.EAST);
 
-		// Scroll a long name while anywhere on the row is hovered, including its buttons
+		// Scroll a long name while anywhere on the row is hovered
 		MouseAdapter hover = new MouseAdapter() {
 			@Override
 			public void mouseEntered(MouseEvent e) {
@@ -699,7 +658,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	private void setMode(Mode mode) {
-		// Remove any preview from the list being switched away from
 		setHoveredEntry(null);
 		this.mode = mode;
 		for (Mode m : Mode.values())
@@ -707,7 +665,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		clearButton.setText(mode.clearLabel);
 		listHeader.setText("All " + mode.label.toLowerCase(Locale.ROOT));
 
-		// Only show the settings which apply to the current list
 		controls.removeAll();
 		controls.add(modeRow);
 		if (mode != Mode.SCENES)
@@ -716,7 +673,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			controls.add(loopButton);
 		if (mode == Mode.SPOTANIMS)
 			controls.add(frameTimingsButton);
-		// The clear button goes with what it clears where there's a section for it: the spawned objects or recreated scene
+		// The clear button goes in the section it clears, where there is one
 		if (mode == Mode.OBJECTS) {
 			spawnedSection.add(clearButton, BorderLayout.SOUTH);
 		} else if (mode == Mode.SCENES) {
@@ -733,7 +690,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 		projectileDisclaimer.setVisible(mode == Mode.PROJECTILES);
 		updateSpawnedSection();
-		// Divide the settings from the list like the spawned objects are, where there's no spawned objects box to do it
+		// Divide the settings from the list where there's no spawned objects box to
 		topSection.setBorder(mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES ? createSectionDivider() : null);
 
 		// The scenes tab has no list to search, so it takes the list's place
@@ -777,9 +734,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			updateResults();
 	}
 
-	/**
-	 * Spotanims configured as projectiles in lights.json or model_overrides.json, plus those named like projectiles.
-	 */
+	/** Spotanims configured as projectiles in lights.json or model_overrides.json, or named like projectiles */
 	private void updateProjectileEntries() {
 		Set<Integer> configured = new HashSet<>();
 		if (hdConfigIds != null) {
@@ -818,9 +773,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			updateResults();
 	}
 
-	/**
-	 * Flag entries with lights or model overrides. Must be called on the Swing thread.
-	 */
+	/** Flag entries with lights or model overrides. Swing thread only. */
 	public void setHdConfigIds(SpawnerTools.HdConfigIds hdConfigIds) {
 		this.hdConfigIds = hdConfigIds;
 		updateProjectileEntries();
@@ -872,9 +825,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		return index;
 	}
 
-	/**
-	 * Scroll the name of the hovered row if it's too long, only animating while a row is hovered.
-	 */
+	/** Scroll the hovered row's name if it's too long */
 	private void setMarqueeIndex(int index) {
 		if (index == marqueeIndex)
 			return;
@@ -896,9 +847,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			resultList.repaint(bounds);
 	}
 
-	/**
-	 * Preview the hovered entry at the player's location, and remove the preview once nothing is hovered.
-	 */
+	/** Preview the hovered entry at the player, until nothing is hovered */
 	private void setHoveredEntry(@Nullable Entry entry) {
 		if (entry == null)
 			setMarqueeIndex(-1);
@@ -944,13 +893,13 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		Set<Integer> filterIds = filter == Filter.HAS_LIGHTS ? getLightIds() : filter == Filter.HAS_OVERRIDE ? getOverrideIds() : null;
 		boolean waitingForFilter = filter != Filter.ALL && filterIds == null;
 
-		// Show the whole of an explicit ID range or count, but otherwise limit how many rows the list holds
+		// Limit the rows, unless given an ID range or count
 		boolean isRange = start != null && !invalidStart && start.toId != -1;
 		boolean hasCount = start != null && !invalidStart && start.count != -1;
 		int limit = isRange ? Integer.MAX_VALUE : hasCount ? start.count : MAX_RESULTS;
 
 		String query = cleanInput(searchBar.getText()).toLowerCase(Locale.ROOT);
-		// Also match when each typed word appears somewhere in the entry, in any order, like "xarth fire"
+		// Each typed word can match anywhere, in any order, like "xarth fire"
 		List<String> words = new ArrayList<>();
 		for (String word : searchBar.getText().split("\\s+")) {
 			word = cleanInput(word).toLowerCase(Locale.ROOT);
@@ -1002,13 +951,10 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		statusText.setText(text);
 	}
 
-	/**
-	 * A read-only text area, which wraps to its actual width, unlike HTML labels which only roughly follow a set width
-	 */
+	/** Read-only text wrapping to its actual width, unlike HTML labels */
 	private static JTextArea createWrappingText() {
 		JTextArea text = new JTextArea() {
-			// Before it has a width, wrapped text measures as one word per line, and RuneLite grows the whole client
-			// window to fit a sidebar's minimum size, so don't let the text dictate one
+			// Without a width, wrapped text measures one word per line, which RuneLite would grow the window to fit
 			@Override
 			public Dimension getMinimumSize() {
 				return new Dimension(0, 0);
@@ -1030,9 +976,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		spawner.postMessage("Copied to clipboard: " + toCopy);
 	}
 
-	/**
-	 * A line under a section, dividing it from the next one with the same room on either side in every tab
-	 */
+	/** A line under a section, with the same room either side in every tab */
 	private static Border createSectionDivider() {
 		return BorderFactory.createCompoundBorder(
 			BorderFactory.createEmptyBorder(0, 0, SECTION_GAP, 0),
@@ -1041,6 +985,17 @@ public class ObjectSpawnerPanel extends PluginPanel {
 				BorderFactory.createEmptyBorder(0, 0, SECTION_GAP, 0)
 			)
 		);
+	}
+
+	private static JPanel createPanel(LayoutManager layout) {
+		JPanel panel = new JPanel(layout);
+		panel.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		return panel;
+	}
+
+	/** Scrolls vertically only */
+	private static JScrollPane createVerticalScroll(Component view) {
+		return new JScrollPane(view, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED, JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 	}
 
 	private static JLabel createLabel(String text) {
@@ -1100,16 +1055,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		return button;
 	}
 
-	/**
-	 * Draw a small cube for the sidebar button, instead of shipping an image.
-	 */
+	/** The sidebar button's icon, drawn instead of shipping an image */
 	static BufferedImage createIcon() {
 		return createCubeIcon(16, SIDEBAR_ICON_COLOR);
 	}
 
-	/**
-	 * Draw the sidebar's cube at any size, designed at 16x16 pixels.
-	 */
+	/** Designed at 16x16 */
 	private static BufferedImage createCubeIcon(int size, Color color) {
 		BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
@@ -1127,9 +1078,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		return image;
 	}
 
-	/**
-	 * Draw a circular arrow, going three quarters of the way around from the top.
-	 */
 	private static BufferedImage createRotateIcon(boolean clockwise) {
 		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
@@ -1137,16 +1085,14 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		g.setColor(Color.WHITE);
 		g.setStroke(new BasicStroke(1.3f));
 		g.drawArc(2, 2, 8, 8, 90, clockwise ? -270 : 270);
-		// The arc ends on the left when going clockwise, or on the right otherwise, heading upwards
+		// The arrowhead at the end of the arc, pointing up
 		int tipX = clockwise ? 2 : 10;
 		g.fillPolygon(new int[] { tipX - 2, tipX + 2, tipX }, new int[] { 6, 6, 3 }, 3);
 		g.dispose();
 		return image;
 	}
 
-	/**
-	 * Draw a lightbulb at any size, designed at 12x12 pixels, flagging entries with lights.
-	 */
+	/** Flags entries with lights. Designed at 12x12. */
 	private static BufferedImage createLightbulbIcon(int size) {
 		BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
@@ -1161,19 +1107,14 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		return image;
 	}
 
-	/**
-	 * Draw a red bin with a lid and handle, for deleting files
-	 */
 	private static BufferedImage createTrashIcon() {
 		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
 		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 		g.setColor(ColorScheme.PROGRESS_ERROR_COLOR);
 		g.setStroke(new BasicStroke(1.2f));
-		// Handle & lid
 		g.drawLine(5, 1, 7, 1);
 		g.drawLine(1, 3, 11, 3);
-		// Body, narrowing towards the bottom, with ridges down it
 		g.drawPolygon(new int[] { 2, 10, 9, 3 }, new int[] { 4, 4, 11, 11 }, 4);
 		g.drawLine(5, 6, 5, 9);
 		g.drawLine(7, 6, 7, 9);
@@ -1194,10 +1135,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	/**
-	 * Where the list starts, given as IDs or gamevals, since a gameval is just another way of writing its ID.
-	 * 1000 or TFA_XARTH starts from there, 1000+100 or TFA_XARTH+100 shows that many entries from there,
-	 * and 500-679 only shows that ID range. A partial gameval resolves to the lowest ID whose gameval starts with it.
-	 * Gamevals only contain capital letters, digits & underscores, so + and - can't be part of one.
+	 * Where the list starts, by ID or gameval: 1000 or TFA_XARTH starts there, 1000+100 shows that many entries from
+	 * there, and 500-679 shows only that range. A partial gameval picks the lowest ID whose gameval starts with it.
 	 */
 	private static class StartFrom {
 		private static final Pattern DIGITS = Pattern.compile("\\d+");
@@ -1222,16 +1161,14 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			return new StartFrom(-1, -1, -1, text.trim());
 		}
 
-		/**
-		 * Parse the input, resolving gamevals using the entries, which must be sorted by ID.
-		 */
+		/** The entries must be sorted by ID */
 		@Nullable
 		static StartFrom parse(String text, List<Entry> entries) {
 			text = cleanInput(text);
 			if (text.isEmpty())
 				return null;
 
-			// Until the number after a + or - has been typed, just use the start
+			// Until the number after + or - is typed, just use the start
 			if (text.endsWith("+") || text.endsWith("-"))
 				text = text.substring(0, text.length() - 1).trim();
 			if (text.isEmpty())
@@ -1270,9 +1207,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			return fromId == null ? unresolved(text) : new StartFrom(fromId, -1, -1, null);
 		}
 
-		/**
-		 * Turn an ID or gameval into an ID, preferring an exact gameval, then the lowest ID whose gameval starts with it.
-		 */
+		/** An ID or gameval as an ID, preferring an exact gameval, then the lowest ID one starts */
 		@Nullable
 		private static Integer resolve(String token, List<Entry> entries) {
 			token = token.trim();
@@ -1286,7 +1221,6 @@ public class ObjectSpawnerPanel extends PluginPanel {
 				}
 			}
 
-			// Gamevals are upper case, so compare in upper case
 			String name = token.toUpperCase(Locale.ROOT);
 			Integer prefixMatch = null;
 			for (Entry entry : entries) {
@@ -1314,10 +1248,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		return true;
 	}
 
-	/**
-	 * Drop quotes, commas & spaces, so gamevals copied straight out of a JSON config like "TFA_XARTH", still match.
-	 * Gamevals and IDs never contain them, and in-game names are matched without spaces too.
-	 */
+	/** Drop quotes, commas & spaces, so gamevals copied out of a JSON config like "TFA_XARTH", still match */
 	private static String cleanInput(String text) {
 		StringBuilder sb = new StringBuilder(text.length());
 		for (int i = 0; i < text.length(); i++) {
@@ -1334,7 +1265,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		final String name;
 		@Nullable
 		final String displayName;
-		// Each field lower case without spaces, separated so a search can't match across two fields
+		// Separated so a search can't match across two fields
 		final String searchText;
 
 		Entry(int id, @Nullable String name, @Nullable String displayName) {
@@ -1346,9 +1277,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		}
 	}
 
-	/**
-	 * Rows which stretch to the scroll pane's width, but keep their own height so they can scroll.
-	 */
+	/** Rows stretching to the scroll pane's width, keeping their own height so they can scroll */
 	private static class SpawnedRowsPanel extends JPanel implements Scrollable {
 		SpawnedRowsPanel() {
 			super(new GridLayout(0, 1, 0, 0));
@@ -1380,9 +1309,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		}
 	}
 
-	/**
-	 * A label which, while marked as animating, scrolls text that's too long instead of cutting it off.
-	 */
+	/** A label which, while animating, scrolls text that's too long instead of cutting it off */
 	private static class MarqueeLabel extends JLabel {
 		// How long the marquee has been running, or -1 to cut off long text as usual
 		long elapsedMs = -1;

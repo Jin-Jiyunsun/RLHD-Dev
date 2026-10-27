@@ -12,35 +12,32 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import javax.annotation.Nullable;
 import lombok.RequiredArgsConstructor;
 import net.runelite.api.*;
-import net.runelite.api.SceneTileModel;
-import net.runelite.api.SceneTilePaint;
 import net.runelite.api.coords.*;
 import rs117.hd.HdPlugin;
 import rs117.hd.dev.Reflection;
+import rs117.hd.renderer.zone.RecreatedSceneRenderer;
 import rs117.hd.scene.ProceduralGenerator;
 import rs117.hd.utils.HDUtils;
 import rs117.hd.utils.ModelHash;
 import rs117.hd.utils.ResourcePath;
 
-/**
- * Developer tools: saves the objects, NPCs and ground the game draws around the player, so {@link SceneTools} can
- * recreate them somewhere else. Captures are kept as JSON files in 117 HD's folder in .runelite.
- */
+/** Saves the objects, NPCs & ground drawn around the player as JSON, for {@link SceneTools} to recreate elsewhere */
 public class SceneCapture {
 	public static final ResourcePath CAPTURES_PATH = HdPlugin.PLUGIN_DIR.resolve("scene_captures");
 
-	// Tiles in each direction which make up an instance's region-sized area around the player
+	// An instance's region-sized area around the player
 	private static final int INSTANCE_REGION_RADIUS = 32;
-	// Which of a tile's tile overrides a floor triangle uses: the main one for painted tiles, or underlay or overlay
+	// Which of a tile's overrides a triangle uses: main for painted tiles, otherwise underlay or overlay
 	public static final int OVERRIDE_MAIN = 0;
 	public static final int OVERRIDE_UNDERLAY = 1;
 	public static final int OVERRIDE_OVERLAY = 2;
-	// Tiles of ground saved around the captured objects, enough for big models
+	// Ground saved around the captured objects, for big models
 	private static final int TERRAIN_MARGIN = 8;
 	private static final int SHAPE_MASK = 0x3F;
 	private static final int SHAPE_WALL_CORNER = 2;
@@ -54,9 +51,7 @@ public class SceneCapture {
 	private static final int SHAPE_ROOF_LAST = 21;
 	private static final int SHAPE_GROUND_DECORATION = 22;
 
-	/**
-	 * How much of the scene to capture
-	 */
+	/** How much of the scene to capture */
 	@RequiredArgsConstructor
 	public enum Area {
 		REGION("This region", -1),
@@ -64,7 +59,7 @@ public class SceneCapture {
 		SCENE("Whole scene", -1);
 
 		private final String label;
-		// Tiles in each direction around the player, or -1 for the region or whole scene
+		// Around the player, or -1 for the region or whole scene
 		private final int tileRadius;
 
 		@Override
@@ -82,26 +77,23 @@ public class SceneCapture {
 
 	public static class Capture {
 		public String name;
-		// Where the player stood, whose plane turns the relative planes below back into the terrain's
+		// Its plane turns the relative planes below back into the terrain's
 		public WorldPoint capturedAt;
-		// The environments.json environment in use, by key or area name, which recreating the capture switches to
+		// By key or area name
 		@Nullable
 		public String environment;
 		public List<CapturedObject> objects = new ArrayList<>();
-		// The ground's tiles, recreated as a floor in their shapes & colours
 		public List<CapturedTile> tiles = new ArrayList<>();
-		// Holes in the ground level which 117 HD fills in black, kept as tiles with only their shapes
+		// Holes in the ground level 117 HD fills in black, with only their shapes
 		public List<CapturedTile> gapFillers = new ArrayList<>();
-		// NPCs, recreated as frozen copies of their models, with no animations or actions
+		// Recreated frozen
 		public List<CapturedNpc> npcs = new ArrayList<>();
-		// The ground under the objects & tiles, for the floor's shape and objects which bend to follow the ground
+		// For objects which bend to follow the ground
 		@Nullable
 		public Terrain terrain;
 	}
 
-	/**
-	 * One NPC, positioned like objects, facing the way it faced
-	 */
+	/** One NPC, positioned like objects, facing the way it faced */
 	public static class CapturedNpc {
 		public int id;
 		public int x;
@@ -111,47 +103,35 @@ public class SceneCapture {
 		public int orientation;
 	}
 
-	/**
-	 * One tile of ground, positioned in tiles relative to the corner of the player's region, and in planes relative to
-	 * the player
-	 */
+	/** A tile of ground, relative to the corner of the player's region, and planes relative to the player */
 	public static class CapturedTile {
 		public int x;
 		public int y;
 		public int plane;
-		// Three corners per triangle, each as a position within the tile & a height relative to the ground the player
-		// stood on, with a colour for each corner
+		// Three corners per triangle, with heights relative to the player's ground, and a colour each
 		public int[] vertices;
 		public int[] colors;
-		// Where the tile really is, in the real map's coordinates for instances, and its underlay & overlay, which pick its
-		// tile_overrides.json override again whenever it's uploaded, so edits to the file show up without recapturing
+		// Where it really is & its underlay and overlay, picking its tile overrides again on every upload
 		@Nullable
 		public int[] worldPos;
 		public int underlayId;
 		public int overlayId;
-		// For each triangle: its vanilla texture or -1, and which of the tile's overrides it uses
+		// Per triangle: vanilla texture or -1, and which of the tile's overrides it uses
 		public int[] textures;
 		public int[] overrideTypes;
 	}
 
-	/**
-	 * The height of each tile corner in the captured area, so objects which follow the ground can be bent the same way
-	 * wherever they're recreated
-	 */
+	/** Tile corner heights, so objects following the ground bend the same way wherever they're recreated */
 	public static class Terrain {
-		// The south-west tile, relative to the corner of the player's region, and how many tiles across
+		// The south-west tile, relative to the region's corner, and size in tiles
 		public int x;
 		public int y;
 		public int width;
 		public int height;
-		// For each of the scene's planes, the heights of the tile corners row by row from the south, relative to the
-		// ground the player stood on, where more negative is higher up
+		// Per plane, corner heights row by row from the south, relative to the player's ground
 		public int[][] heights;
 
-		/**
-		 * The ground's height at a point in local units relative to the region's corner, blended between tile corners
-		 * the same way the client does, or null if the point isn't covered
-		 */
+		/** The ground's height at a region-relative local point, blended like the client, or null if not covered */
 		@Nullable
 		Integer getHeight(int plane, int localX, int localY) {
 			if (heights == null || plane < 0 || plane >= heights.length)
@@ -170,10 +150,7 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * One object, positioned in local units relative to the corner of the player's region, in planes relative to the
-	 * player, and in height relative to the ground the player stands on, where more negative is higher up
-	 */
+	/** An object, in local units relative to the region's corner, planes & height relative to the player */
 	public static class CapturedObject {
 		public int id;
 		public Kind kind;
@@ -183,20 +160,17 @@ public class SceneCapture {
 		public int y;
 		public int height;
 		public int plane;
-		// Wall decorations' offset from their wall, which only their first part moves by
+		// Wall decorations' offset, which only their first part moves by
 		public int xOffset;
 		public int yOffset;
-		// Game objects' extra rotation, such as 45 degrees for diagonal objects
+		// Such as 45 degrees for diagonal objects
 		public int modelOrientation;
-		// The model the client drew, kept for objects it builds from more than their models in the cache, like roofs
+		// The model the client drew, for objects built from more than their cache models, like roofs
 		@Nullable
 		public CapturedModel model;
 	}
 
-	/**
-	 * A model as the client drew it in the scene, already rotated and bent to the ground, with everything 117 HD reads
-	 * from a model when uploading static scenery
-	 */
+	/** A model as the client drew it, with everything 117 HD reads when uploading static scenery */
 	public static class CapturedModel {
 		public float[] verticesX, verticesY, verticesZ;
 		public int[] faceIndices1, faceIndices2, faceIndices3;
@@ -252,9 +226,7 @@ public class SceneCapture {
 			return captured;
 		}
 
-		/**
-		 * A stand-in model with the captured data, for 117 HD to upload. Anything else it's asked for is left empty.
-		 */
+		/** A stand-in model for 117 HD to upload */
 		public Model toModel() {
 			return Reflection.stub(Model.class, name -> {
 				switch (name) {
@@ -343,10 +315,7 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * One model to spawn for a captured object, chosen the same way the client builds the object for its scene.
-	 * Rotations above 3 pick the mirrored or 45 degree variant of a wall or wall decoration model.
-	 */
+	/** A model the client builds for an object. Rotations above 3 pick mirrored or 45 degree wall variants. */
 	@RequiredArgsConstructor
 	public static class Part {
 		public final int modelType;
@@ -362,31 +331,23 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * What the game and 117 HD aren't drawing, which captures leave out
-	 */
+	/** What isn't drawn, which captures leave out */
 	public interface Visibility {
-		// Whether objects at a level under a roof were drawn last frame, or null if nothing has been drawn yet
+		// Null before anything's drawn
 		@Nullable
 		Boolean isLevelDrawn(int level, int roofId);
 
-		// Whether 117 HD's area hiding hides the tile, while the player is in an area which hides everything outside it
 		boolean isHiddenByArea(Tile tile);
 
-		// Whether 117 HD fills the gaps in the ground at a scene position, which it does in some areas when it's enabled
 		boolean isGapFilled(int sceneX, int sceneY);
 
-		// Whether a model override hides the object, given its ModelHash type
 		boolean isHiddenByOverride(TileObject object, int type);
 
-		// Where a tile really is, in the real map's coordinates for instances, the same way 117 HD picks its tile overrides
+		// In the real map's coordinates for instances, like 117 HD picks tile overrides
 		void getWorldPosition(Tile tile, int level, int[] result);
 	}
 
-	/**
-	 * Capture every object within the area which the game and 117 HD currently draw, including the extended area 117 HD
-	 * loads around the scene. Must be called on the client thread.
-	 */
+	/** Capture everything drawn in the area, including 117 HD's extended scene. Client thread only. */
 	@Nullable
 	public static Capture capture(Client client, String name, Area area, Visibility visibility) {
 		assert client.isClientThread();
@@ -405,8 +366,7 @@ public class SceneCapture {
 		Tile[][][] tiles = scene.getExtendedTiles();
 		int cornerX = getRegionCorner(scene.getBaseX(), origin.getX());
 		int cornerY = getRegionCorner(scene.getBaseY(), origin.getY());
-		// Instances piece rooms together from chunks of several regions, and their own coordinates don't line up with rooms,
-		// so capture a region-sized square centred on the player instead
+		// Instances' regions don't line up with rooms, so capture a region-sized square around the player
 		boolean instanceRegion = area == Area.REGION && worldView.isInstance();
 		int tileRadius = instanceRegion ? INSTANCE_REGION_RADIUS : area.tileRadius;
 		int originRegion = getRegionId(scene, origin.getSceneX(), origin.getSceneY());
@@ -414,7 +374,7 @@ public class SceneCapture {
 		int[][][] roofs = scene.getRoofs();
 		int extendedOffset = HDUtils.EXTENDED_SCENE_OFFSET;
 		var capturer = new Capturer(client, scene, capture, visibility, cornerX, cornerY, originPlane, groundHeight);
-		// Tiles which passed the checks above, so NPCs standing on them are captured by the same rules
+		// So NPCs are captured by the same rules
 		Set<Integer> capturedTiles = new HashSet<>();
 		for (int z = 0; z < tiles.length; z++) {
 			for (Tile[] column : tiles[z]) {
@@ -422,8 +382,7 @@ public class SceneCapture {
 					if (tile == null)
 						continue;
 					var sceneLocation = tile.getSceneLocation();
-					// Skip what the game hides, like the planes above the player, which instances can fill with other
-					// states of the area. Recreated objects aren't hidden like that, so they'd stack on top of each other.
+					// Skip hidden planes, which instances can fill with other states of the area
 					int roofId = getRoofId(settings, roofs, z, sceneLocation.getX() + extendedOffset, sceneLocation.getY() + extendedOffset);
 					Boolean drawn = visibility.isLevelDrawn(z, roofId);
 					if (drawn == null ? z > originPlane : !drawn)
@@ -436,7 +395,7 @@ public class SceneCapture {
 					capturer.captureTile(tile);
 					capturer.captureGround(tile);
 					capturedTiles.add(packTile(z, sceneLocation.getX(), sceneLocation.getY()));
-					// The ground under a bridge is kept as a separate tile, which is drawn along with the bridge
+					// The ground under a bridge is a separate tile
 					if (tile.getBridge() != null) {
 						capturer.captureTile(tile.getBridge());
 						capturer.captureGround(tile.getBridge());
@@ -444,7 +403,7 @@ public class SceneCapture {
 				}
 			}
 		}
-		// Gaps are filled on the ground level, including where there are no tiles at all, apart from the scene's edges
+		// On the ground level, including where there are no tiles, except the scene's edges
 		for (int tileExX = 1; tileExX < tiles[0].length - 1; tileExX++) {
 			for (int tileExY = 1; tileExY < tiles[0][tileExX].length - 1; tileExY++) {
 				int sceneX = tileExX - extendedOffset;
@@ -478,12 +437,10 @@ public class SceneCapture {
 	}
 
 	private static int packTile(int level, int sceneX, int sceneY) {
-		return level << 16 | (sceneX + HDUtils.EXTENDED_SCENE_OFFSET) << 8 | sceneY + HDUtils.EXTENDED_SCENE_OFFSET;
+		return RecreatedSceneRenderer.packTile(level, sceneX + HDUtils.EXTENDED_SCENE_OFFSET, sceneY + HDUtils.EXTENDED_SCENE_OFFSET);
 	}
 
-	/**
-	 * Capture the NPCs standing on captured tiles as they currently look, leaving out pets, which follow players around
-	 */
+	/** Capture NPCs on captured tiles as they look now, leaving out pets */
 	private static void captureNpcs(
 		Client client,
 		WorldView worldView,
@@ -514,9 +471,6 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * Captures the objects on tiles, relative to the corner of the player's region
-	 */
 	@RequiredArgsConstructor
 	private static class Capturer {
 		final Client client;
@@ -530,7 +484,7 @@ public class SceneCapture {
 
 		void captureTile(Tile tile) {
 			for (GameObject object : tile.getGameObjects()) {
-				// Skip actors & projectiles, and objects bigger than one tile everywhere but their first tile
+				// Skip actors & projectiles, and big objects everywhere but their first tile
 				if (object == null || ModelHash.isTemporaryObject(object.getHash()) ||
 					object.getRenderable() == null || object.getRenderable() instanceof Actor ||
 					!object.getSceneMinLocation().equals(tile.getSceneLocation()))
@@ -538,7 +492,7 @@ public class SceneCapture {
 				var captured = capture(tile, object, Kind.GAME, object.getConfig(), ModelHash.TYPE_GAME_OBJECT);
 				if (captured != null) {
 					captured.modelOrientation = object.getModelOrientation();
-					// The client builds some roofs from more than their models in the cache, so keep the model it draws
+					// The client builds some roofs from more than their cache models
 					var renderable = object.getRenderable();
 					if (captured.shape >= SHAPE_ROOF_FIRST && captured.shape <= SHAPE_ROOF_LAST && renderable instanceof Model)
 						captured.model = CapturedModel.of((Model) renderable);
@@ -566,14 +520,14 @@ public class SceneCapture {
 		}
 
 		/**
-		 * Capture a tile's ground as triangles with a colour at each corner, the same way the client gives them to 117 HD.
-		 * Painted tiles are two triangles from the tile's corners, while shaped tiles have their own. Like 117 HD, the
-		 * tile's heights, underlay & overlay come from the level it's drawn on, which isn't always the one it's kept on.
+		 * Capture a tile's ground as triangles with a colour per corner, as the client gives them to 117 HD. Heights,
+		 * underlay & overlay come from the level it's drawn on, like 117 HD.
 		 */
 		void captureGround(Tile tile) {
 			int level = tile.getRenderLevel();
-			int[][][] tileHeights = scene.getTileHeights();
 			var sceneLocation = tile.getSceneLocation();
+			int tileExX = sceneLocation.getX() + HDUtils.EXTENDED_SCENE_OFFSET;
+			int tileExY = sceneLocation.getY() + HDUtils.EXTENDED_SCENE_OFFSET;
 			var paint = tile.getSceneTilePaint();
 			var model = tile.getSceneTileModel();
 			List<Integer> vertices = new ArrayList<>();
@@ -583,76 +537,34 @@ public class SceneCapture {
 			if (paint != null) {
 				if (paint.getNeColor() == HDUtils.HIDDEN_HSL)
 					return;
-				int tileExX = sceneLocation.getX() + HDUtils.EXTENDED_SCENE_OFFSET;
-				int tileExY = sceneLocation.getY() + HDUtils.EXTENDED_SCENE_OFFSET;
-				int sw = tileHeights[level][tileExX][tileExY] - groundHeight;
-				int se = tileHeights[level][tileExX + 1][tileExY] - groundHeight;
-				int ne = tileHeights[level][tileExX + 1][tileExY + 1] - groundHeight;
-				int nw = tileHeights[level][tileExX][tileExY + 1] - groundHeight;
-				int size = Perspective.LOCAL_TILE_SIZE;
-				// Split the same way as 117 HD splits painted tiles
-				addCorner(vertices, colors, size, ne, size, paint.getNeColor());
-				addCorner(vertices, colors, 0, nw, size, paint.getNwColor());
-				addCorner(vertices, colors, size, se, 0, paint.getSeColor());
-				addCorner(vertices, colors, 0, sw, 0, paint.getSwColor());
-				addCorner(vertices, colors, size, se, 0, paint.getSeColor());
-				addCorner(vertices, colors, 0, nw, size, paint.getNwColor());
+				addSquare(vertices, colors, level, tileExX, tileExY,
+					paint.getSwColor(), paint.getSeColor(), paint.getNeColor(), paint.getNwColor());
 				for (int triangle = 0; triangle < 2; triangle++) {
 					textures.add(paint.getTexture());
 					overrideTypes.add(OVERRIDE_MAIN);
 				}
 			} else if (model != null) {
-				int originX = sceneLocation.getX() << Perspective.LOCAL_COORD_BITS;
-				int originY = sceneLocation.getY() << Perspective.LOCAL_COORD_BITS;
-				int[] vertexX = model.getVertexX();
-				int[] vertexY = model.getVertexY();
-				int[] vertexZ = model.getVertexZ();
-				int[][] faces = { model.getFaceX(), model.getFaceY(), model.getFaceZ() };
-				int[][] faceColors = { model.getTriangleColorA(), model.getTriangleColorB(), model.getTriangleColorC() };
 				int[] faceTextures = model.getTriangleTextureId();
-				for (int face = 0; face < faces[0].length; face++) {
-					if (faceColors[0][face] == HDUtils.HIDDEN_HSL)
-						continue;
+				addFaces(vertices, colors, model, sceneLocation.getX(), sceneLocation.getY(), false, face -> {
 					textures.add(faceTextures == null ? -1 : faceTextures[face]);
 					overrideTypes.add(ProceduralGenerator.isOverlayFace(tile, face) ? OVERRIDE_OVERLAY : OVERRIDE_UNDERLAY);
-					for (int corner = 0; corner < 3; corner++) {
-						int vertex = faces[corner][face];
-						addCorner(
-							vertices, colors,
-							vertexX[vertex] - originX,
-							vertexY[vertex] - groundHeight,
-							vertexZ[vertex] - originY,
-							faceColors[corner][face]
-						);
-					}
-				}
+				});
 			}
 			if (colors.isEmpty())
 				return;
 
-			var captured = new CapturedTile();
-			captured.x = sceneLocation.getX() - (cornerX >> Perspective.LOCAL_COORD_BITS);
-			captured.y = sceneLocation.getY() - (cornerY >> Perspective.LOCAL_COORD_BITS);
-			captured.plane = level - originPlane;
-			captured.vertices = vertices.stream().mapToInt(Integer::intValue).toArray();
-			captured.colors = colors.stream().mapToInt(Integer::intValue).toArray();
-			captured.textures = textures.stream().mapToInt(Integer::intValue).toArray();
-			captured.overrideTypes = overrideTypes.stream().mapToInt(Integer::intValue).toArray();
+			var captured = createTile(sceneLocation.getX(), sceneLocation.getY(), level, vertices, colors);
+			captured.textures = toIntArray(textures);
+			captured.overrideTypes = toIntArray(overrideTypes);
 			captured.worldPos = new int[3];
 			visibility.getWorldPosition(tile, level, captured.worldPos);
-			int tileExX = sceneLocation.getX() + HDUtils.EXTENDED_SCENE_OFFSET;
-			int tileExY = sceneLocation.getY() + HDUtils.EXTENDED_SCENE_OFFSET;
 			captured.underlayId = scene.getUnderlayIds()[level][tileExX][tileExY];
 			captured.overlayId = scene.getOverlayIds()[level][tileExX][tileExY];
 			capture.tiles.add(captured);
 		}
 
-		/**
-		 * Capture the hole in the ground level at a scene position, the same way 117 HD's SceneUploader.processGapTile finds
-		 * it: the whole tile where nothing is painted, or a shaped tile's hidden triangles
-		 */
+		/** The ground level's hole at a position, found like SceneUploader.processGapTile */
 		void captureGapFiller(@Nullable Tile tile, int tileExX, int tileExY) {
-			int[][][] tileHeights = scene.getTileHeights();
 			int level = 0;
 			SceneTilePaint paint = null;
 			SceneTileModel model = null;
@@ -679,50 +591,92 @@ public class SceneCapture {
 			int sceneX = tileExX - HDUtils.EXTENDED_SCENE_OFFSET;
 			int sceneY = tileExY - HDUtils.EXTENDED_SCENE_OFFSET;
 			if (model != null) {
-				int originX = sceneX << Perspective.LOCAL_COORD_BITS;
-				int originY = sceneY << Perspective.LOCAL_COORD_BITS;
-				int[] vertexX = model.getVertexX();
-				int[] vertexY = model.getVertexY();
-				int[] vertexZ = model.getVertexZ();
-				int[][] faces = { model.getFaceX(), model.getFaceY(), model.getFaceZ() };
-				int[] faceColors = model.getTriangleColorA();
-				for (int face = 0; face < faces[0].length; face++) {
-					if (faceColors[face] != HDUtils.HIDDEN_HSL)
-						continue;
-					for (int corner = 0; corner < 3; corner++) {
-						int vertex = faces[corner][face];
-						addCorner(
-							vertices, colors,
-							vertexX[vertex] - originX,
-							vertexY[vertex] - groundHeight,
-							vertexZ[vertex] - originY,
-							0
-						);
-					}
-				}
+				addFaces(vertices, colors, model, sceneX, sceneY, true, face -> {});
 			} else {
-				int sw = tileHeights[level][tileExX][tileExY] - groundHeight;
-				int se = tileHeights[level][tileExX + 1][tileExY] - groundHeight;
-				int ne = tileHeights[level][tileExX + 1][tileExY + 1] - groundHeight;
-				int nw = tileHeights[level][tileExX][tileExY + 1] - groundHeight;
-				int size = Perspective.LOCAL_TILE_SIZE;
-				addCorner(vertices, colors, size, ne, size, 0);
-				addCorner(vertices, colors, 0, nw, size, 0);
-				addCorner(vertices, colors, size, se, 0, 0);
-				addCorner(vertices, colors, 0, sw, 0, 0);
-				addCorner(vertices, colors, size, se, 0, 0);
-				addCorner(vertices, colors, 0, nw, size, 0);
+				addSquare(vertices, colors, level, tileExX, tileExY, 0, 0, 0, 0);
 			}
-			if (colors.isEmpty())
-				return;
+			if (!colors.isEmpty())
+				capture.gapFillers.add(createTile(sceneX, sceneY, level, vertices, colors));
+		}
 
+		/** A painted tile's two triangles, split like 117 HD splits them */
+		private void addSquare(
+			List<Integer> vertices,
+			List<Integer> colors,
+			int level,
+			int tileExX,
+			int tileExY,
+			int swColor,
+			int seColor,
+			int neColor,
+			int nwColor
+		) {
+			int[][] heights = scene.getTileHeights()[level];
+			int sw = heights[tileExX][tileExY] - groundHeight;
+			int se = heights[tileExX + 1][tileExY] - groundHeight;
+			int ne = heights[tileExX + 1][tileExY + 1] - groundHeight;
+			int nw = heights[tileExX][tileExY + 1] - groundHeight;
+			int size = Perspective.LOCAL_TILE_SIZE;
+			addCorner(vertices, colors, size, ne, size, neColor);
+			addCorner(vertices, colors, 0, nw, size, nwColor);
+			addCorner(vertices, colors, size, se, 0, seColor);
+			addCorner(vertices, colors, 0, sw, 0, swColor);
+			addCorner(vertices, colors, size, se, 0, seColor);
+			addCorner(vertices, colors, 0, nw, size, nwColor);
+		}
+
+		/** A shaped tile's visible triangles, or hidden ones with no colour */
+		private void addFaces(
+			List<Integer> vertices,
+			List<Integer> colors,
+			SceneTileModel model,
+			int sceneX,
+			int sceneY,
+			boolean hidden,
+			IntConsumer onFace
+		) {
+			int originX = sceneX << Perspective.LOCAL_COORD_BITS;
+			int originY = sceneY << Perspective.LOCAL_COORD_BITS;
+			int[] vertexX = model.getVertexX();
+			int[] vertexY = model.getVertexY();
+			int[] vertexZ = model.getVertexZ();
+			int[][] faces = { model.getFaceX(), model.getFaceY(), model.getFaceZ() };
+			int[][] faceColors = { model.getTriangleColorA(), model.getTriangleColorB(), model.getTriangleColorC() };
+			for (int face = 0; face < faces[0].length; face++) {
+				if ((faceColors[0][face] == HDUtils.HIDDEN_HSL) != hidden)
+					continue;
+				onFace.accept(face);
+				for (int corner = 0; corner < 3; corner++) {
+					int vertex = faces[corner][face];
+					addCorner(
+						vertices, colors,
+						vertexX[vertex] - originX,
+						vertexY[vertex] - groundHeight,
+						vertexZ[vertex] - originY,
+						hidden ? 0 : faceColors[corner][face]
+					);
+				}
+			}
+		}
+
+		private CapturedTile createTile(
+			int sceneX,
+			int sceneY,
+			int level,
+			List<Integer> vertices,
+			List<Integer> colors
+		) {
 			var captured = new CapturedTile();
 			captured.x = sceneX - (cornerX >> Perspective.LOCAL_COORD_BITS);
 			captured.y = sceneY - (cornerY >> Perspective.LOCAL_COORD_BITS);
 			captured.plane = level - originPlane;
-			captured.vertices = vertices.stream().mapToInt(Integer::intValue).toArray();
-			captured.colors = colors.stream().mapToInt(Integer::intValue).toArray();
-			capture.gapFillers.add(captured);
+			captured.vertices = toIntArray(vertices);
+			captured.colors = toIntArray(colors);
+			return captured;
+		}
+
+		private static int[] toIntArray(List<Integer> list) {
+			return list.stream().mapToInt(Integer::intValue).toArray();
 		}
 
 		private static void addCorner(List<Integer> vertices, List<Integer> colors, int x, int height, int y, int color) {
@@ -742,7 +696,7 @@ public class SceneCapture {
 			if (visibility.isHiddenByOverride(object, type))
 				return null;
 
-			// Objects which change with varbits are captured as whatever they currently look like
+			// Varbit objects as they look now
 			int id = object.getId();
 			var def = client.getObjectDefinition(id);
 			if (def.getImpostorIds() != null) {
@@ -760,15 +714,12 @@ public class SceneCapture {
 			captured.x = object.getX() - cornerX;
 			captured.y = object.getY() - cornerY;
 			captured.height = object.getZ() - groundHeight;
-			// The level it's drawn on, whose ground it follows, which isn't always the one it's kept on
+			// The level it's drawn on, which isn't always the one it's kept on
 			captured.plane = tile.getRenderLevel() - originPlane;
 			return captured;
 		}
 	}
 
-	/**
-	 * Save the tile corner heights under the objects & tiles, with some room around them for big models
-	 */
 	@Nullable
 	private static Terrain captureTerrain(Scene scene, Capture capture, int cornerX, int cornerY, int groundHeight) {
 		if (capture.objects.isEmpty() && capture.tiles.isEmpty())
@@ -788,7 +739,7 @@ public class SceneCapture {
 		}
 
 		int[][][] tileHeights = scene.getTileHeights();
-		// Region-relative tiles to extended scene tiles, which have one more corner than tiles along each side
+		// Extended scene tiles have one more corner than tiles along each side
 		int toExtendedX = (cornerX >> Perspective.LOCAL_COORD_BITS) + HDUtils.EXTENDED_SCENE_OFFSET;
 		int toExtendedY = (cornerY >> Perspective.LOCAL_COORD_BITS) + HDUtils.EXTENDED_SCENE_OFFSET;
 		var terrain = new Terrain();
@@ -809,10 +760,8 @@ public class SceneCapture {
 	}
 
 	/**
-	 * Finish a recreated object's model the way the client does after rotating it: scale it, move it by its definition's
-	 * offset, bend it to the ground, then move it back by the nudge which gave it a unique position. The client does all of
-	 * this along the world's axes, so the model is rotated first, and back again after unless it should stay rotated like
-	 * static scenery, since RuneLiteObjects rotate when drawn.
+	 * Finish a model like the client after rotating it: scale, offset, bend to the ground, then undo the nudge
+	 * giving it a unique position. Rotated back after unless it stays rotated like static scenery.
 	 */
 	public static ModelData finishModel(
 		ModelData model,
@@ -833,10 +782,7 @@ public class SceneCapture {
 		return keepRotated ? model : rotate(model, 4 - quarterTurns);
 	}
 
-	/**
-	 * Bend a model which is already rotated like the client's to follow the captured ground, like the client does for
-	 * objects marked to, either fully or only its lower part
-	 */
+	/** Bend a rotated model to follow the captured ground like the client, fully or only its lower part */
 	public static void contour(
 		ModelData model,
 		int contouredGround,
@@ -861,7 +807,7 @@ public class SceneCapture {
 			if (contouredGround == 0) {
 				ys[i] += offset;
 			} else if (top > 0) {
-				// Only bend the part of the model below the threshold, less so the higher up it is
+				// Less the higher up it is
 				int threshold = (int) (-ys[i] * 65536 / top);
 				if (threshold < contouredGround)
 					ys[i] += (float) offset * (contouredGround - threshold) / contouredGround;
@@ -882,9 +828,7 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * The roof a tile's objects are hidden with, worked out the same way as 117 HD's SceneUploader
-	 */
+	/** The roof a tile's objects hide with, like SceneUploader */
 	private static int getRoofId(byte[][][] settings, int[][][] roofs, int level, int extendedX, int extendedY) {
 		int mapLevel = level;
 		if ((settings[1][extendedX][extendedY] & Constants.TILE_FLAG_BRIDGE) != 0)
@@ -895,20 +839,16 @@ public class SceneCapture {
 		return roofs[mapLevel - 1][extendedX][extendedY];
 	}
 
-	/**
-	 * The local coordinate of the south-west edge of the region containing a local coordinate, along one axis
-	 */
+	/** The south-west edge of the region containing a local coordinate, along one axis */
 	public static int getRegionCorner(int sceneBase, int local) {
 		return ((sceneBase + (local >> Perspective.LOCAL_COORD_BITS) & ~63) - sceneBase) << Perspective.LOCAL_COORD_BITS;
 	}
 
 	private static int getRegionId(Scene scene, int sceneX, int sceneY) {
-		return (scene.getBaseX() + sceneX >> 6) << 8 | scene.getBaseY() + sceneY >> 6;
+		return HDUtils.worldToRegionID(scene.getBaseX() + sceneX, scene.getBaseY() + sceneY);
 	}
 
-	/**
-	 * The models the client builds for an object of this kind, shape & rotation, which most objects only have one of
-	 */
+	/** The models the client builds for an object of this kind, shape & rotation */
 	public static List<Part> getParts(CapturedObject object) {
 		int rotation = object.rotation;
 		switch (object.kind) {
@@ -938,10 +878,7 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * The model IDs for a part, or null if the object has no model of that type.
-	 * Objects without model types only have centrepiece models, which the client merges.
-	 */
+	/** A part's model IDs, or null if there's none of its type. Objects without types only have centrepieces. */
 	@Nullable
 	public static int[] getModelIds(TestObjectDefinition def, Part part) {
 		if (def.modelTypes == null)
@@ -952,10 +889,7 @@ public class SceneCapture {
 		return null;
 	}
 
-	/**
-	 * Mirror a model the way the client does, which also flips its faces' winding so they don't turn inside out.
-	 * Only call this on a model from {@link Client#mergeModels}, since it changes the face arrays in place.
-	 */
+	/** Mirror a model like the client, flipping its winding. Changes the faces in place, so only for merged models. */
 	public static void mirror(ModelData model) {
 		float[] z = model.getVerticesZ();
 		for (int i = 0; i < model.getVerticesCount(); i++)
@@ -969,9 +903,7 @@ public class SceneCapture {
 		}
 	}
 
-	/**
-	 * Turn a wall decoration model 45 degrees to sit against a diagonal wall, and move it out to the wall like the client does
-	 */
+	/** Turn a wall decoration 45 degrees onto a diagonal wall, like the client */
 	public static void rotateDiagonal(ModelData model) {
 		float[] x = model.getVerticesX();
 		float[] z = model.getVerticesZ();
@@ -984,9 +916,7 @@ public class SceneCapture {
 		model.translate(45, 0, -45);
 	}
 
-	/**
-	 * Save a capture under a file name made from its name, without replacing an earlier capture. Returns the file name.
-	 */
+	/** Save a capture without replacing an earlier one, returning its file name */
 	public static String save(Gson gson, Capture capture) throws IOException {
 		CAPTURES_PATH.mkdirs();
 		String baseName = capture.name.replaceAll("[^A-Za-z0-9 _-]", "_").trim();
@@ -999,9 +929,7 @@ public class SceneCapture {
 		return fileName;
 	}
 
-	/**
-	 * A name for a capture which wasn't given one, from where it was captured, such as an environment, and when
-	 */
+	/** A default name, from where & when it was captured */
 	public static String getDefaultName(@Nullable String place) {
 		return (place == null ? "capture" : place) + "_" + new SimpleDateFormat("yyyy-MM-dd_HH-mm-ss").format(new Date());
 	}
@@ -1010,20 +938,15 @@ public class SceneCapture {
 		return CAPTURES_PATH.resolve(fileName).loadJson(gson, Capture.class);
 	}
 
-	/**
-	 * Delete a saved capture, if it's still there
-	 */
+	/** Delete a saved capture, if it's still there */
 	public static void delete(String fileName) throws IOException {
 		Path path = CAPTURES_PATH.resolve(fileName).toPath();
-		// Only ever delete captures, whatever the name says
 		if (!path.toAbsolutePath().normalize().getParent().equals(CAPTURES_PATH.toPath().toAbsolutePath().normalize()))
 			throw new IOException("Not a scene capture: " + fileName);
 		Files.deleteIfExists(path);
 	}
 
-	/**
-	 * The file names of every saved capture, sorted by name
-	 */
+	/** The file names of every saved capture, sorted by name */
 	public static List<String> list() throws IOException {
 		if (!CAPTURES_PATH.exists())
 			return List.of();

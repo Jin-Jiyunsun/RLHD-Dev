@@ -20,13 +20,8 @@ import rs117.hd.renderer.zone.RecreatedSceneRenderer;
 import rs117.hd.utils.ModelHash;
 
 /**
- * Draws client-side test objects, such as spawned objects, as the object IDs they stand in for, so 117 HD applies those
- * objects' model overrides to them.
- * <p>
- * 117 HD picks a model override by the object ID in the hash of the tile object it's asked to draw, which for a
- * RuneLiteObject says nothing about which object it shows. So while there are test objects, the client's draw callbacks
- * are wrapped, and test objects are passed on to 117 HD's renderer in a stand-in tile object whose hash has their ID.
- * The wrapper also draws a recreated scene capture's zones, through {@link RecreatedSceneRenderer}.
+ * Wraps the client's draw callbacks so test objects reach 117 HD in stand-in tile objects whose hashes carry the IDs
+ * they stand in for, picking those objects' model overrides. Also draws recreated scenes' zones.
  */
 @Slf4j
 @Singleton
@@ -40,9 +35,9 @@ public class TestObjectRenderer {
 	@Inject
 	private RecreatedSceneRenderer recreatedSceneRenderer;
 
-	// Test objects and the object IDs they stand in for. Read while drawing on other threads.
+	// Read while drawing on other threads
 	private final Map<RuneLiteObject, Integer> testObjects = new ConcurrentHashMap<>();
-	// The same objects by their exact local position, since what's drawn isn't always the RuneLiteObject itself
+	// By exact position too, since what's drawn isn't always the RuneLiteObject itself
 	private final Map<Long, Integer> testObjectPositions = new ConcurrentHashMap<>();
 
 	@Nullable
@@ -60,9 +55,7 @@ public class TestObjectRenderer {
 		unwrap();
 	}
 
-	/**
-	 * Draw the object as the given object ID. It must be in place before it's added, and never move afterwards.
-	 */
+	/** Draw the object as the given object ID. It must be in place before it's added, and never move afterwards. */
 	public void add(RuneLiteObject object, int objectId) {
 		testObjects.put(object, objectId);
 		testObjectPositions.put(packPosition(object.getX(), object.getY()), objectId);
@@ -86,10 +79,7 @@ public class TestObjectRenderer {
 		return testObjectPositions.containsKey(packPosition(localX, localZ));
 	}
 
-	/**
-	 * The object ID a test object stands in for, matched by identity or else by its exact local position,
-	 * or -1 if the renderable isn't a test object
-	 */
+	/** The object ID a test object stands in for, by identity or exact position, or -1 */
 	public int getTestObjectId(@Nullable Renderable renderable, int localX, int localZ) {
 		if (testObjects.isEmpty() || renderable instanceof Actor || renderable instanceof Projectile || renderable instanceof DynamicObject)
 			return -1;
@@ -101,8 +91,7 @@ public class TestObjectRenderer {
 
 	@Subscribe
 	public void onBeforeRender(BeforeRender event) {
-		// Only wrap while there's something to draw or real gap fillers to hide, and wrap again whenever 117 HD has replaced
-		// its renderer
+		// Only while there's something to draw or hide, again whenever 117 HD replaces its renderer
 		if (testObjects.isEmpty() && !recreatedSceneRenderer.hasContent() && !recreatedSceneRenderer.isHidingRealGapFillers()) {
 			unwrap();
 		} else if (client.getDrawCallbacks() != wrapper) {
@@ -173,7 +162,7 @@ public class TestObjectRenderer {
 				if (drawingZone)
 					recreatedSceneRenderer.restoreRealGapFillers();
 			}
-			// Draw the recreated scene's zones after 117 HD's, without letting a problem with them stop 117 HD
+			// Without letting a problem with the recreated scene stop 117 HD
 			try {
 				switch (method.getName()) {
 					case "preSceneDraw":
@@ -204,7 +193,7 @@ public class TestObjectRenderer {
 		int objectId = getTestObjectId(renderable, localX, localZ);
 		if (objectId == -1 || tileObject == null)
 			return tileObject;
-		// Keep the scene position & plane bits, and replace the type & ID, which are what 117 HD reads
+		// Keep the position & plane bits, replacing the type & ID
 		long hash = tileObject.getHash() & 0xFFFF | (long) ModelHash.TYPE_OBJECT << 16 | (long) objectId << 20;
 		Function<String, Object> answers = name -> name.equals("getHash") ? hash : null;
 		if (tileObject instanceof GameObject)

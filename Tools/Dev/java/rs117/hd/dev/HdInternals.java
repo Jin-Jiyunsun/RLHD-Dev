@@ -29,10 +29,7 @@ import rs117.hd.utils.collections.Int2ObjectHashMap;
 import static rs117.hd.dev.Reflection.field;
 import static rs117.hd.dev.Reflection.get;
 
-/**
- * Reads and changes 117 HD's private state which the developer tools need, so 117 HD doesn't have to expose it.
- * Everything here except {@link #readGamevals} must be called on the client thread, where 117 HD changes this state.
- */
+/** 117 HD's private state the developer tools need. Client thread only, except {@link #readGamevals}. */
 @Singleton
 public class HdInternals {
 	public static final String GAMEVAL_OBJECTS = "objects";
@@ -93,9 +90,7 @@ public class HdInternals {
 		return ((ListMultimap<Integer, LightDefinition>) get(NPC_LIGHTS, lightManager)).get(npcId);
 	}
 
-	/**
-	 * Have 117 HD load the scene's lights again before it next updates them, like it does after lights.json changes
-	 */
+	/** Reload the scene's lights, like after lights.json changes */
 	public void reloadLights() {
 		assert client.isClientThread();
 		try {
@@ -105,9 +100,7 @@ public class HdInternals {
 		}
 	}
 
-	/**
-	 * The environments.json environment with this name, as 117 HD has it loaded now, or null if there's none
-	 */
+	/** The loaded environments.json environment with this name, or null */
 	@Nullable
 	public Environment findEnvironment(String name) {
 		assert client.isClientThread();
@@ -124,9 +117,7 @@ public class HdInternals {
 		return new HashSet<>(((Multimap<Integer, ?>) get(field, lightManager)).keySet());
 	}
 
-	/**
-	 * The IDs of the given ModelHash type which have model overrides
-	 */
+	/** The IDs of the given ModelHash type which have model overrides */
 	public Set<Integer> getOverriddenIds(int type) {
 		assert client.isClientThread();
 		HashSet<Integer> ids = new HashSet<>();
@@ -136,17 +127,12 @@ public class HdInternals {
 		return ids;
 	}
 
-	/**
-	 * Remove an actor's spotanim lights without fading them out, so a restarted spotanim gets fresh lights
-	 */
+	/** Remove an actor's spotanim lights without fading, so a restarted spotanim gets fresh ones */
 	public void removeSpotanimLightsImmediately(Actor actor, int spotanimId) {
 		getLights().removeIf(light -> light.actor == actor && light.spotanimId == spotanimId);
 	}
 
-	/**
-	 * Read one category of 117 HD's gamevals, separately from the copy 117 HD keeps. Safe to call from any thread,
-	 * so the disk IO can stay off the client thread.
-	 */
+	/** Read one category of 117 HD's gamevals from disk, from any thread */
 	public Map<String, Integer> readGamevals(String category) throws IOException {
 		try (var reader = ((ResourcePath) get(GAMEVAL_PATH, null)).toReader()) {
 			Map<String, Map<String, Integer>> gamevals = gson.fromJson(
