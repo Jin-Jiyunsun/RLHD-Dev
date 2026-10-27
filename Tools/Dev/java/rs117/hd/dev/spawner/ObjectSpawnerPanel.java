@@ -73,6 +73,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final int DEFAULT_PROJECTILE_START_HEIGHT = 150;
 	private static final int SPAWNED_ROW_HEIGHT = 32;
 	private static final int SPAWNED_VISIBLE_ROWS = 5;
+	// Taller, since a busy scene's picks pile up
+	private static final int SELECTED_VISIBLE_ROWS = 12;
 	private static final int SAVED_CAPTURES_VISIBLE_ROWS = 10;
 	// Room above and below the line dividing sections, the same in every tab
 	private static final int SECTION_GAP = 10;
@@ -496,7 +498,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		selectedScroll.setBorder(BorderFactory.createLineBorder(ColorScheme.MEDIUM_GRAY_COLOR));
 		selectedScroll.getViewport().setBackground(ColorScheme.DARK_GRAY_COLOR);
 		selectedScroll.getVerticalScrollBar().setUnitIncrement(SPAWNED_ROW_HEIGHT);
-		selectedScroll.setPreferredSize(new Dimension(0, SPAWNED_VISIBLE_ROWS * SPAWNED_ROW_HEIGHT + 2));
+		selectedScroll.setPreferredSize(new Dimension(0, SELECTED_VISIBLE_ROWS * SPAWNED_ROW_HEIGHT + 2));
 
 		JButton clearSelectionButton = createButton("Clear selection");
 		clearSelectionButton.addActionListener(e -> selection.clear());
