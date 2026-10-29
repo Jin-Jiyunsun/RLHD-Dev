@@ -38,6 +38,7 @@ import net.runelite.client.ui.overlay.OverlayPosition;
 import net.runelite.client.ui.overlay.OverlayUtil;
 import net.runelite.client.ui.overlay.outline.ModelOutlineRenderer;
 import rs117.hd.dev.TestObjectRenderer;
+import rs117.hd.renderer.zone.RecreatedSceneRenderer;
 import rs117.hd.renderer.zone.RecreatedSceneRenderer.StaticObject;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.utils.ModelHash;
@@ -65,6 +66,8 @@ public class ObjectSelection extends Overlay {
 	);
 	// Pixels between the top of a selected object & its number
 	private static final int NUMBER_GAP = 6;
+	// Screen sizes away from the viewport, beyond which a projected corner is treated as behind the camera
+	private static final int OFF_SCREEN_REACH = 4;
 
 	@Inject
 	private Client client;
@@ -89,6 +92,9 @@ public class ObjectSelection extends Overlay {
 
 	@Inject
 	private TestObjectRenderer testObjectRenderer;
+
+	@Inject
+	private RecreatedSceneRenderer recreatedSceneRenderer;
 
 	@Inject
 	private Provider<SceneTools> sceneTools;
@@ -204,7 +210,8 @@ public class ObjectSelection extends Overlay {
 			}
 		}
 		for (var object : sceneTools.get().getRecreatedStaticObjects()) {
-			if (object.removed)
+			// Objects still waiting to be uploaded aren't drawn yet, so they can't be what was clicked
+			if (object.removed || !recreatedSceneRenderer.isDrawn(object))
 				continue;
 			long distance;
 			try {
@@ -325,6 +332,9 @@ public class ObjectSelection extends Overlay {
 	/** Whether the mouse is over one of a model's drawn triangles, like the client's own clickboxes */
 	private boolean trianglesContain(WorldView worldView, Model model, int orientation, int x, int y, int z, int mouseX, int mouseY) {
 		int vertices = projectVertices(worldView, model, orientation, x, y, z);
+		// Corners barely in front of the camera project far off screen, stretching their triangles over everything, so
+		// they're left out like those behind it. No triangle on screen reaches this far.
+		int reach = OFF_SCREEN_REACH * Math.max(client.getViewportWidth(), client.getViewportHeight());
 		int[] faceA = model.getFaceIndices1();
 		int[] faceB = model.getFaceIndices2();
 		int[] faceC = model.getFaceIndices3();
@@ -339,6 +349,8 @@ public class ObjectSelection extends Overlay {
 			// Behind the camera
 			if (screenX[a] == Integer.MIN_VALUE || screenX[b] == Integer.MIN_VALUE || screenX[c] == Integer.MIN_VALUE)
 				continue;
+			if (isFarOffScreen(a, reach) || isFarOffScreen(b, reach) || isFarOffScreen(c, reach))
+				continue;
 			if (triangleContains(screenX[a], screenY[a], screenX[b], screenY[b], screenX[c], screenY[c], mouseX, mouseY))
 				return true;
 		}
@@ -346,6 +358,10 @@ public class ObjectSelection extends Overlay {
 	}
 
 	/** Project a model's vertices into screenX & screenY, returning how many */
+	private boolean isFarOffScreen(int vertex, int reach) {
+		return Math.abs(screenX[vertex]) > reach || Math.abs(screenY[vertex]) > reach;
+	}
+
 	private int projectVertices(WorldView worldView, Model model, int orientation, int x, int y, int z) {
 		int vertices = model.getVerticesCount();
 		if (screenX.length < vertices) {

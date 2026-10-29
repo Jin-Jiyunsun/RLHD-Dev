@@ -999,6 +999,16 @@ public class RecreatedSceneRenderer {
 		};
 	}
 
+	/** Whether a recreated object's zone has been uploaded, so it's being drawn. Client thread only. */
+	public boolean isDrawn(StaticObject object) {
+		int zx = ((object.x >> LOCAL_COORD_BITS) + HDUtils.EXTENDED_SCENE_OFFSET) >> 3;
+		int zz = ((object.y >> LOCAL_COORD_BITS) + HDUtils.EXTENDED_SCENE_OFFSET) >> 3;
+		if (zx < 0 || zz < 0 || zx >= NUM_ZONES || zz >= NUM_ZONES)
+			return false;
+		Zone zone = zones[zx][zz];
+		return zone != null && zone.initialized && plugin.renderer == uploadedFor;
+	}
+
 	@Nullable
 	private Zone getDrawableZone(Scene scene, int zx, int zz) {
 		if (contents.isEmpty() || scene == null || scene.getWorldViewId() != WorldView.TOPLEVEL)
