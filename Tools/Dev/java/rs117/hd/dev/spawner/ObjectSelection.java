@@ -6,10 +6,14 @@ import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Shape;
 import java.awt.event.MouseEvent;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.WeakHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import javax.annotation.Nullable;
@@ -38,6 +42,8 @@ import rs117.hd.renderer.zone.RecreatedSceneRenderer.StaticObject;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.utils.ModelHash;
 
+import static rs117.hd.dev.Reflection.method;
+
 /**
  * Right-clicking a spawned or recreated object selects it for the sidebar, outlined like Object Markers does. Clicks are
  * only watched and passed on unchanged, so the game's menu & clickboxes work exactly as without it. Nothing is consumed,
@@ -51,6 +57,12 @@ public class ObjectSelection extends Overlay {
 	private static final int OUTLINE_WIDTH = 2;
 	private static final int OUTLINE_FEATHER = 2;
 	private static final BasicStroke CLICKBOX_STROKE = new BasicStroke(OUTLINE_WIDTH);
+	// Object Markers' outline, which RuneLite only exposes for tile objects, actors & RuneLiteObjects
+	private static final Method DRAW_MODEL_OUTLINE = method(
+		ModelOutlineRenderer.class,
+		"drawModelOutline",
+		WorldView.class, Model.class, int.class, int.class, int.class, int.class, int.class, Color.class, int.class
+	);
 	// Pixels between the top of a selected object & its number
 	private static final int NUMBER_GAP = 6;
 
@@ -110,6 +122,8 @@ public class ObjectSelection extends Overlay {
 	private boolean started;
 	// Recreated objects don't move or change model, so their extents are worked out once
 	private final Map<StaticObject, int[]> staticBounds = new WeakHashMap<>();
+	// Recreated objects whose models can't be outlined, such as captured roofs' stand-ins, outlined by their hull instead
+	private final Set<StaticObject> hullOutlined = Collections.newSetFromMap(new WeakHashMap<>());
 	// Projected vertices, reused between models
 	private int[] screenX = new int[0];
 	private int[] screenY = new int[0];
@@ -379,18 +393,33 @@ public class ObjectSelection extends Overlay {
 				if (location != null && t.getModel() != null)
 					drawNumber(graphics, number, worldView, t.getModel(), t.getOrientation(), location.getX(), location.getY(), t.getZ());
 			} else if (object.staticObject != null && object.staticObject.model != null) {
-				// The hull of its vertices, since the model outline isn't public for loose models
 				var s = object.staticObject;
-				Shape hull = getHull(worldView, s.model, s.orientation, s.x, s.y, s.height);
-				if (hull != null) {
-					graphics.setColor(OUTLINE_COLOR);
-					graphics.setStroke(CLICKBOX_STROKE);
-					graphics.draw(hull);
+				if (!hullOutlined.contains(s) && !drawModelOutline(worldView, s))
+					hullOutlined.add(s);
+				if (hullOutlined.contains(s)) {
+					Shape hull = getHull(worldView, s.model, s.orientation, s.x, s.y, s.height);
+					if (hull != null) {
+						graphics.setColor(OUTLINE_COLOR);
+						graphics.setStroke(CLICKBOX_STROKE);
+						graphics.draw(hull);
+					}
 				}
 				drawNumber(graphics, number, worldView, s.model, s.orientation, s.x, s.y, s.height);
 			}
 		}
 		return null;
+	}
+
+	/** Outline a recreated object exactly like Object Markers, returning false if its model can't be */
+	private boolean drawModelOutline(WorldView worldView, StaticObject s) {
+		try {
+			DRAW_MODEL_OUTLINE.invoke(outlineRenderer, worldView, s.model, s.x, s.y, s.height, s.orientation,
+				OUTLINE_WIDTH, OUTLINE_COLOR, OUTLINE_FEATHER);
+			return true;
+		} catch (IllegalAccessException | InvocationTargetException | RuntimeException ex) {
+			log.debug("Outlining recreated object {} by its hull instead", s.id, ex);
+			return false;
+		}
 	}
 
 	/** Its number in the sidebar, centred just above the highest point of it on screen, clear of the outline */
