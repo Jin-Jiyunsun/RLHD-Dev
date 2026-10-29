@@ -188,6 +188,9 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private Map<Integer, TestObjectDefinition> loadedDefinitions;
 	@Nullable
 	private SpawnerTools.HdConfigIds hdConfigIds;
+	// Spotanims & projectiles share IDs, and a gameval can have lights or overrides under either kind, which both tabs flag
+	private Set<Integer> anySpotanimLights = Set.of();
+	private Set<Integer> anySpotanimOverrides = Set.of();
 	private boolean definitionsChecked;
 	private boolean spotanimsLoaded;
 	private boolean loop = true;
@@ -880,6 +883,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	/** Flag entries with lights or model overrides. Swing thread only. */
 	public void setHdConfigIds(SpawnerTools.HdConfigIds hdConfigIds) {
 		this.hdConfigIds = hdConfigIds;
+		anySpotanimLights = union(hdConfigIds.spotanimLights, hdConfigIds.projectileLights);
+		anySpotanimOverrides = union(hdConfigIds.spotanimOverrides, hdConfigIds.projectileOverrides);
 		updateProjectileEntries();
 		if (filter != Filter.ALL || mode == Mode.PROJECTILES) {
 			updateResults();
@@ -895,10 +900,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		switch (mode) {
 			case OBJECTS:
 				return hdConfigIds.objectLights;
-			case SPOTANIMS:
-				return hdConfigIds.spotanimLights;
 			default:
-				return hdConfigIds.projectileLights;
+				return anySpotanimLights;
 		}
 	}
 
@@ -909,11 +912,15 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		switch (mode) {
 			case OBJECTS:
 				return hdConfigIds.objectOverrides;
-			case SPOTANIMS:
-				return hdConfigIds.spotanimOverrides;
 			default:
-				return hdConfigIds.projectileOverrides;
+				return anySpotanimOverrides;
 		}
+	}
+
+	private static Set<Integer> union(Set<Integer> a, Set<Integer> b) {
+		Set<Integer> union = new HashSet<>(a);
+		union.addAll(b);
+		return union;
 	}
 
 	@Nullable

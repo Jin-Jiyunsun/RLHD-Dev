@@ -112,6 +112,20 @@ public class HdInternals {
 		return null;
 	}
 
+	/** 117 HD's lights.json lights by graphics object ID, for previews to add to */
+	@SuppressWarnings("unchecked")
+	public ListMultimap<Integer, LightDefinition> getGraphicsObjectLightTable() {
+		assert client.isClientThread();
+		return (ListMultimap<Integer, LightDefinition>) get(GRAPHICS_OBJECT_LIGHTS, lightManager);
+	}
+
+	/** 117 HD's lights.json lights by projectile ID, for previews to add to */
+	@SuppressWarnings("unchecked")
+	public ListMultimap<Integer, LightDefinition> getProjectileLightTable() {
+		assert client.isClientThread();
+		return (ListMultimap<Integer, LightDefinition>) get(PROJECTILE_LIGHTS, lightManager);
+	}
+
 	private Set<Integer> getLightIds(Field field) {
 		assert client.isClientThread();
 		return new HashSet<>(((Multimap<Integer, ?>) get(field, lightManager)).keySet());

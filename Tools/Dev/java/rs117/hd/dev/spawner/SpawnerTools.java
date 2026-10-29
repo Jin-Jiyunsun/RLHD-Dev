@@ -59,6 +59,8 @@ public class SpawnerTools {
 	private static final int HD_CONFIG_CHECK_TICKS = 50;
 
 	private static final int TEST_SPOTANIM_SLOT = 0;
+	// Hover previews play in a slot of their own, so they never replace a clicked spotanim
+	private static final int PREVIEW_SPOTANIM_SLOT = 1;
 	// Client cycles, long enough for the previous lights to be marked for removal
 	private static final int TEST_SPOTANIM_LOOP_DELAY = 50;
 
@@ -88,6 +90,9 @@ public class SpawnerTools {
 	private LightManager lightManager;
 
 	@Inject
+	private PreviewLights previewLights;
+
+	@Inject
 	private HdInternals hdInternals;
 
 	@Inject
@@ -104,12 +109,9 @@ public class SpawnerTools {
 
 	private boolean started;
 
-	private int testSpotanimId = -1;
-	private boolean testSpotanimLoop;
-	private int testSpotanimRestartCycle = -1;
-	private List<int[]> testSpotanimFrameTimes;
-	private int testSpotanimLastFrame;
-	private boolean testSpotanimIsPreview;
+	// A clicked spotanim, and the one being previewed by hovering, played side by side
+	private final TestSpotanim testSpotanim = new TestSpotanim(TEST_SPOTANIM_SLOT);
+	private final TestSpotanim previewSpotanim = new TestSpotanim(PREVIEW_SPOTANIM_SLOT);
 	private volatile boolean postSpotanimFrameTimings;
 	private final AtomicInteger testSpotanimPreviewRequest = new AtomicInteger();
 
@@ -222,71 +224,120 @@ public class SpawnerTools {
 	public void onClientTick(ClientTick clientTick) {
 		updateTestProjectile();
 		updateSpawnerHdConfigIds();
+		previewLights.update();
 		updateTestObjectDefinitionLoad();
 
-		if (testSpotanimId == -1)
-			return;
-
 		Player player = client.getLocalPlayer();
-		if (player == null)
-			return;
+		if (player != null) {
+			testSpotanim.update(player);
+			previewSpotanim.update(player);
+		}
+	}
 
-		ActorSpotAnim spotanim = findTestSpotanim(player);
-		if (spotanim != null) {
-			testSpotanimRestartCycle = -1;
-			// Record when each frame starts during the first play
-			int elapsedCycles = client.getGameCycle() - spotanim.getStartCycle();
-			if (testSpotanimFrameTimes != null && elapsedCycles >= 0 && spotanim.getFrame() != testSpotanimLastFrame) {
-				testSpotanimLastFrame = spotanim.getFrame();
-				testSpotanimFrameTimes.add(new int[] { testSpotanimLastFrame, elapsedCycles * Constants.CLIENT_TICK_LENGTH });
+	/** A spotanim played on the local player in a slot of its own, played again after a pause while it loops */
+	private class TestSpotanim {
+		final int slot;
+		int id = -1;
+		boolean loop;
+		int restartCycle = -1;
+		// When each frame starts during the first play, for clicked spotanims' timelines
+		@Nullable
+		List<int[]> frameTimes;
+		int lastFrame;
+
+		TestSpotanim(int slot) {
+			this.slot = slot;
+		}
+
+		void start(int id, boolean loop, boolean recordTimeline) {
+			if (!developerMode)
+				return;
+			// From the beginning, lights included, even when replacing the same spotanim
+			int previousId = this.id;
+			stop();
+			Player player = client.getLocalPlayer();
+			if (previousId != -1 && player != null)
+				hdInternals.removeSpotanimLightsImmediately(player, previousId);
+
+			this.id = id;
+			this.loop = loop;
+			frameTimes = recordTimeline ? new ArrayList<>() : null;
+			lastFrame = -1;
+			play();
+		}
+
+		void play() {
+			Player player = client.getLocalPlayer();
+			if (player == null)
+				return;
+
+			// Replays need fresh lights, while the previous play's may still be fading out
+			hdInternals.removeSpotanimLightsImmediately(player, id);
+			updatePreviewLights();
+			player.createSpotAnim(slot, id, 0, 0);
+
+			// Client-side spotanims don't notify plugins, so tell the LightManager directly, unseen by other plugins
+			GraphicChanged changed = new GraphicChanged();
+			changed.setActor(player);
+			lightManager.onGraphicChanged(changed);
+		}
+
+		void stop() {
+			if (id == -1)
+				return;
+
+			// Only its own slot, leaving the other test spotanim & the game's own alone
+			Player player = client.getLocalPlayer();
+			ActorSpotAnim current = player == null ? null : player.getSpotAnims().get(slot);
+			if (current != null && current.getId() == id)
+				player.removeSpotAnim(slot);
+
+			id = -1;
+			loop = false;
+			restartCycle = -1;
+			frameTimes = null;
+			updatePreviewLights();
+		}
+
+		void update(Player player) {
+			if (id == -1)
+				return;
+
+			ActorSpotAnim spotanim = player.getSpotAnims().get(slot);
+			if (spotanim != null && spotanim.getId() == id) {
+				restartCycle = -1;
+				int elapsedCycles = client.getGameCycle() - spotanim.getStartCycle();
+				if (frameTimes != null && elapsedCycles >= 0 && spotanim.getFrame() != lastFrame) {
+					lastFrame = spotanim.getFrame();
+					frameTimes.add(new int[] { lastFrame, elapsedCycles * Constants.CLIENT_TICK_LENGTH });
+				}
+				return;
 			}
-			return;
-		}
 
-		if (testSpotanimFrameTimes != null) {
-			if (postSpotanimFrameTimings)
-				postSpotanimTimeline(testSpotanimFrameTimes);
-			testSpotanimFrameTimes = null;
-		}
+			if (frameTimes != null) {
+				if (postSpotanimFrameTimings)
+					postSpotanimTimeline(frameTimes);
+				frameTimes = null;
+			}
 
-		if (!testSpotanimLoop) {
-			testSpotanimId = -1;
-			return;
-		}
+			if (!loop) {
+				id = -1;
+				updatePreviewLights();
+				return;
+			}
 
-		int cycle = client.getGameCycle();
-		if (testSpotanimRestartCycle == -1) {
-			testSpotanimRestartCycle = cycle + TEST_SPOTANIM_LOOP_DELAY;
-		} else if (cycle >= testSpotanimRestartCycle) {
-			testSpotanimRestartCycle = -1;
-			playTestSpotanim();
+			int cycle = client.getGameCycle();
+			if (restartCycle == -1) {
+				restartCycle = cycle + TEST_SPOTANIM_LOOP_DELAY;
+			} else if (cycle >= restartCycle) {
+				restartCycle = -1;
+				play();
+			}
 		}
 	}
 
-	@Nullable
-	private ActorSpotAnim findTestSpotanim(Player player) {
-		for (var s : player.getSpotAnims())
-			if (s.getId() == testSpotanimId)
-				return s;
-		return null;
-	}
-
-	private void startTestSpotanim(int id, boolean loop, boolean recordTimeline) {
-		if (!developerMode)
-			return;
-		// From the beginning, lights included, even when replacing the same spotanim
-		int previousId = testSpotanimId;
-		stopTestSpotanim();
-		Player player = client.getLocalPlayer();
-		if (previousId != -1 && player != null)
-			hdInternals.removeSpotanimLightsImmediately(player, previousId);
-
-		testSpotanimId = id;
-		testSpotanimLoop = loop;
-		// So hovering doesn't post a timeline
-		testSpotanimFrameTimes = recordTimeline ? new ArrayList<>() : null;
-		testSpotanimLastFrame = -1;
-		playTestSpotanim();
+	private void updatePreviewLights() {
+		previewLights.setSpotanims(testSpotanim.id, previewSpotanim.id);
 	}
 
 	private void postPlayingSpotanim(int id, boolean loop) {
@@ -304,7 +355,10 @@ public class SpawnerTools {
 				postMessage("No local player to play the spotanim on");
 				return;
 			}
-			startTestSpotanim(id, loop, true);
+			testSpotanim.start(id, loop, true);
+			// The clicked spotanim takes over from its own preview
+			if (previewSpotanim.id == id)
+				previewSpotanim.stop();
 			postPlayingSpotanim(id, loop);
 		});
 	}
@@ -314,37 +368,34 @@ public class SpawnerTools {
 		postSpotanimFrameTimings = post;
 	}
 
-	/** Whether the playing test spotanim loops, unless it's a preview. Any thread. */
+	/** Whether the clicked test spotanim loops. Any thread. */
 	public void setSpotanimLoop(boolean loop) {
 		clientThread.invoke(() -> {
-			if (testSpotanimId != -1 && !testSpotanimIsPreview)
-				testSpotanimLoop = loop;
+			if (testSpotanim.id != -1)
+				testSpotanim.loop = loop;
 		});
 	}
 
-	/** Preview a spotanim looping on the local player, replacing any test spotanim. Any thread. */
+	/** Preview a spotanim looping on the local player, alongside any clicked spotanim. Any thread. */
 	public void previewSpotanim(int id) {
 		int request = testSpotanimPreviewRequest.incrementAndGet();
 		clientThread.invoke(() -> {
 			if (request != testSpotanimPreviewRequest.get() || client.getLocalPlayer() == null)
 				return;
-			startTestSpotanim(id, true, false);
-			testSpotanimIsPreview = true;
+			previewSpotanim.start(id, true, false);
 		});
 	}
 
 	public void clearSpotanimPreview() {
 		testSpotanimPreviewRequest.incrementAndGet();
-		clientThread.invoke(() -> {
-			if (testSpotanimIsPreview)
-				stopTestSpotanim();
-		});
+		clientThread.invoke(previewSpotanim::stop);
 	}
 
+	/** Stop the clicked spotanim, leaving any preview. Any thread. */
 	public void stopSpotanimAndNotify() {
 		clientThread.invoke(() -> {
-			boolean wasPlaying = testSpotanimId != -1;
-			stopTestSpotanim();
+			boolean wasPlaying = testSpotanim.id != -1;
+			testSpotanim.stop();
 			postMessage(wasPlaying ? "Stopped test spotanim" : "No test spotanim is playing");
 		});
 	}
@@ -364,34 +415,9 @@ public class SpawnerTools {
 		});
 	}
 
-	private void playTestSpotanim() {
-		Player player = client.getLocalPlayer();
-		if (player == null)
-			return;
-
-		// Replays need fresh lights, while the previous play's may still be fading out
-		hdInternals.removeSpotanimLightsImmediately(player, testSpotanimId);
-		player.createSpotAnim(TEST_SPOTANIM_SLOT, testSpotanimId, 0, 0);
-
-		// Client-side spotanims don't notify plugins, so tell the LightManager directly, unseen by other plugins
-		GraphicChanged changed = new GraphicChanged();
-		changed.setActor(player);
-		lightManager.onGraphicChanged(changed);
-	}
-
 	private void stopTestSpotanim() {
-		if (testSpotanimId == -1)
-			return;
-
-		Player player = client.getLocalPlayer();
-		if (player != null && player.hasSpotAnim(testSpotanimId))
-			player.removeSpotAnim(TEST_SPOTANIM_SLOT);
-
-		testSpotanimId = -1;
-		testSpotanimIsPreview = false;
-		testSpotanimLoop = false;
-		testSpotanimRestartCycle = -1;
-		testSpotanimFrameTimes = null;
+		testSpotanim.stop();
+		previewSpotanim.stop();
 	}
 
 	/** Spawn a test object at the local player. Any thread. */
@@ -549,6 +575,7 @@ public class SpawnerTools {
 			return;
 		stopTestProjectile();
 		testProjectileId = id;
+		previewLights.setProjectile(id);
 		testProjectileLoop = loop;
 		testProjectileFired = false;
 		testProjectileNextCycle = client.getGameCycle();
@@ -561,6 +588,7 @@ public class SpawnerTools {
 			testProjectile.setEndCycle(client.getGameCycle());
 		testProjectile = null;
 		testProjectileId = -1;
+		previewLights.setProjectile(-1);
 		testProjectileIsPreview = false;
 		testProjectileLoop = false;
 	}
