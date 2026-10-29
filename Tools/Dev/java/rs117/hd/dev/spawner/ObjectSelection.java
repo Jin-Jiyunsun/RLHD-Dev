@@ -211,7 +211,12 @@ public class ObjectSelection extends Overlay {
 		if (nearestTestObject != null) {
 			Integer id = testObjectRenderer.getTestObjects().get(nearestTestObject);
 			if (id != null)
-				picked = create(ModelHash.TYPE_OBJECT, id, nearestTestObject, null);
+				picked = create(
+					testObjectRenderer.isNpc(nearestTestObject) ? ModelHash.TYPE_NPC : ModelHash.TYPE_OBJECT,
+					id,
+					nearestTestObject,
+					null
+				);
 		} else if (nearestStaticObject != null) {
 			picked = create(nearestStaticObject.type, nearestStaticObject.id, null, nearestStaticObject);
 		}

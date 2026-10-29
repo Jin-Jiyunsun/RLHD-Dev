@@ -82,7 +82,9 @@ public class TestObjectLights {
 			testObjectLights,
 			testObjects.keySet(),
 			object -> object.isActive() && testObjects.containsKey(object),
-			object -> hdInternals.getObjectLights(testObjects.get(object)),
+			object -> testObjectRenderer.isNpc(object) ?
+				hdInternals.getNpcLights(testObjects.get(object)) :
+				hdInternals.getObjectLights(testObjects.get(object)),
 			(light, object) -> {
 				var location = object.getLocation();
 				light.tileObjectId = testObjects.get(object);

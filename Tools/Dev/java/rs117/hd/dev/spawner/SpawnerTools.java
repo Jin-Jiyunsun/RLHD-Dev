@@ -890,6 +890,24 @@ public class SpawnerTools {
 		return object;
 	}
 
+	/** Spawn an NPC test object playing an animation, at a location free of other test objects */
+	RuneLiteObject placeTestNpc(int npcId, Model model, LocalPoint location, int plane, int orientation, int height, int animation) {
+		if (!developerMode)
+			return null;
+		// Purely visual, with no clickbox or menu entries
+		RuneLiteObject object = client.createRuneLiteObject();
+		object.setModel(model);
+		object.setAnimationController(new AnimationController(client, animation));
+		object.setShouldLoop(true);
+		object.setDrawFrontTilesFirst(false);
+		object.setLocation(location, plane);
+		object.setOrientation(orientation);
+		object.setZ(height);
+		object.setActive(true);
+		testObjectRenderer.addNpc(object, npcId);
+		return object;
+	}
+
 	boolean isTestObjectAt(LocalPoint location) {
 		return testObjectRenderer.isTestObjectAt(location.getX(), location.getY());
 	}

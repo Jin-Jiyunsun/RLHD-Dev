@@ -5,6 +5,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import javax.annotation.Nullable;
@@ -39,6 +40,11 @@ public class TestObjectRenderer {
 	private final Map<RuneLiteObject, Integer> testObjects = new ConcurrentHashMap<>();
 	// By exact position too, since what's drawn isn't always the RuneLiteObject itself
 	private final Map<Long, Integer> testObjectPositions = new ConcurrentHashMap<>();
+	// Test objects standing in for NPCs rather than objects, such as recreated NPCs playing their idle animation
+	private final Set<RuneLiteObject> npcTestObjects = ConcurrentHashMap.newKeySet();
+	private final Set<Long> npcTestObjectPositions = ConcurrentHashMap.newKeySet();
+	// One stand-in NPC per ID, recognised by identity since stand-ins can't be hashed
+	private final Map<Integer, Renderable> npcStandIns = new ConcurrentHashMap<>();
 
 	@Nullable
 	private DrawCallbacks wrapped;
@@ -61,14 +67,32 @@ public class TestObjectRenderer {
 		testObjectPositions.put(packPosition(object.getX(), object.getY()), objectId);
 	}
 
+	/** Draw the object as the given NPC ID, with the same rules as {@link #add} */
+	public void addNpc(RuneLiteObject object, int npcId) {
+		npcTestObjects.add(object);
+		npcTestObjectPositions.add(packPosition(object.getX(), object.getY()));
+		add(object, npcId);
+	}
+
 	public void remove(RuneLiteObject object) {
-		if (testObjects.remove(object) != null)
-			testObjectPositions.remove(packPosition(object.getX(), object.getY()));
+		if (testObjects.remove(object) != null) {
+			long position = packPosition(object.getX(), object.getY());
+			testObjectPositions.remove(position);
+			npcTestObjects.remove(object);
+			npcTestObjectPositions.remove(position);
+		}
 	}
 
 	public void clear() {
 		testObjects.clear();
 		testObjectPositions.clear();
+		npcTestObjects.clear();
+		npcTestObjectPositions.clear();
+		npcStandIns.clear();
+	}
+
+	public boolean isNpc(RuneLiteObject object) {
+		return npcTestObjects.contains(object);
 	}
 
 	public Map<RuneLiteObject, Integer> getTestObjects() {
@@ -81,7 +105,10 @@ public class TestObjectRenderer {
 
 	/** The object ID a test object stands in for, by identity or exact position, or -1 */
 	public int getTestObjectId(@Nullable Renderable renderable, int localX, int localZ) {
-		if (testObjects.isEmpty() || renderable instanceof Actor || renderable instanceof Projectile || renderable instanceof DynamicObject)
+		if (testObjects.isEmpty() || renderable instanceof Projectile || renderable instanceof DynamicObject)
+			return -1;
+		// Render callbacks are asked about NPC test objects' stand-ins, which are actors, unlike any other test object
+		if (renderable instanceof Actor && !isNpcStandIn(renderable))
 			return -1;
 		Integer id = renderable instanceof RuneLiteObject ? testObjects.get(renderable) : null;
 		if (id == null)
@@ -133,8 +160,12 @@ public class TestObjectRenderer {
 				case "drawDynamic":
 					// ([renderThreadId,] projection, scene, tileObject, renderable, model, orientation, x, y, z)
 					int i = args.length - 9;
-					if (i == 0 || i == 1)
-						args[i + 2] = standIn((TileObject) args[i + 2], (Renderable) args[i + 3], (int) args[i + 6], (int) args[i + 8]);
+					if (i == 0 || i == 1) {
+						var renderable = (Renderable) args[i + 3];
+						int x = (int) args[i + 6], z = (int) args[i + 8];
+						args[i + 2] = standIn((TileObject) args[i + 2], renderable, x, z);
+						args[i + 3] = standInRenderable(renderable, x, z);
+					}
 					break;
 				case "drawTemp":
 					// (projection, scene, gameObject, model, orientation, x, y, z)
@@ -190,15 +221,67 @@ public class TestObjectRenderer {
 	}
 
 	private TileObject standIn(TileObject tileObject, Renderable renderable, int localX, int localZ) {
-		int objectId = getTestObjectId(renderable, localX, localZ);
-		if (objectId == -1 || tileObject == null)
+		int id = getTestObjectId(renderable, localX, localZ);
+		if (id == -1 || tileObject == null)
 			return tileObject;
+		boolean npc = isNpcTestObject(renderable, localX, localZ);
 		// Keep the position & plane bits, replacing the type & ID
-		long hash = tileObject.getHash() & 0xFFFF | (long) ModelHash.TYPE_OBJECT << 16 | (long) objectId << 20;
-		Function<String, Object> answers = name -> name.equals("getHash") ? hash : null;
+		long hash = tileObject.getHash() & 0xFFFF | (long) (npc ? ModelHash.TYPE_NPC : ModelHash.TYPE_OBJECT) << 16 | (long) id << 20;
+		Renderable npcStandIn = npc ? getNpcStandIn(id) : null;
+		Function<String, Object> answers = name -> {
+			switch (name) {
+				case "getHash":
+					return hash;
+				case "getRenderable":
+					return npcStandIn;
+			}
+			return null;
+		};
 		if (tileObject instanceof GameObject)
 			return Reflection.wrap(GameObject.class, (GameObject) tileObject, answers);
 		return Reflection.wrap(TileObject.class, tileObject, answers);
+	}
+
+	/** An NPC stand-in in place of an NPC test object's renderable, otherwise the renderable itself */
+	private Renderable standInRenderable(Renderable renderable, int localX, int localZ) {
+		if (!isNpcTestObject(renderable, localX, localZ))
+			return renderable;
+		int id = getTestObjectId(renderable, localX, localZ);
+		return id == -1 ? renderable : getNpcStandIn(id);
+	}
+
+	private boolean isNpcTestObject(@Nullable Renderable renderable, int localX, int localZ) {
+		if (npcTestObjects.isEmpty())
+			return false;
+		return renderable instanceof RuneLiteObject && npcTestObjects.contains(renderable) ||
+			   npcTestObjectPositions.contains(packPosition(localX, localZ));
+	}
+
+	/**
+	 * 117 HD takes an NPC's ID from the NPC drawn rather than the hash, so NPC test objects are drawn as a stand-in NPC with
+	 * their ID. Its model height is 0, which keeps it sorted like any other test object.
+	 */
+	private Renderable getNpcStandIn(int npcId) {
+		return npcStandIns.computeIfAbsent(npcId, TestObjectRenderer::createNpcStandIn);
+	}
+
+	private boolean isNpcStandIn(Renderable renderable) {
+		for (var standIn : npcStandIns.values())
+			if (standIn == renderable)
+				return true;
+		return false;
+	}
+
+	private static Renderable createNpcStandIn(int npcId) {
+		return Reflection.stub(NPC.class, name -> {
+			switch (name) {
+				case "getId":
+					return npcId;
+				case "getModelHeight":
+					return 0;
+			}
+			return null;
+		});
 	}
 
 	private static long packPosition(int localX, int localZ) {

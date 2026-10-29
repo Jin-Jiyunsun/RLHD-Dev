@@ -550,6 +550,7 @@ public class SceneTools {
 
 	private void finishSceneRecreation(SceneRecreation recreation) {
 		sceneRecreation = null;
+		placeAnimatedNpcs(recreation);
 		log.debug("Recreated {} in {} ms", recreation.name, (System.nanoTime() - recreation.startedAt) / 1_000_000);
 		int objects = recreatedSceneObjects.size() + recreatedStaticObjects.size() - recreation.recreatedNpcs;
 		String message = "Recreated " + objects + " objects" +
@@ -651,6 +652,15 @@ public class SceneTools {
 				recreation.skippedNoModel++;
 				continue;
 			}
+			recreation.recreatedNpcs++;
+			// Animated NPCs need RuneLiteObjects, placed along with animated objects
+			if (captured.idleAnimation != null && captured.idleAnimation != -1) {
+				recreation.animatedNpcs.add(new PendingNpc(
+					captured.id, model, location, originPlane, captured.orientation, groundHeight + captured.height,
+					captured.idleAnimation
+				));
+				continue;
+			}
 			recreation.staticObjects.add(new StaticObject(
 				ModelHash.TYPE_NPC,
 				captured.id,
@@ -663,7 +673,25 @@ public class SceneTools {
 				location.getY(),
 				groundHeight + captured.height
 			));
-			recreation.recreatedNpcs++;
+		}
+	}
+
+	private void placeAnimatedNpcs(SceneRecreation recreation) {
+		var spawner = spawnerTools.get();
+		for (var npc : recreation.animatedNpcs) {
+			if (!npc.location.isInScene()) {
+				recreation.skippedOutsideScene++;
+				recreation.recreatedNpcs--;
+				continue;
+			}
+			// Test objects are recognised by exact position, so move each off the NPC's spot and other test objects
+			var location = npc.location;
+			do {
+				location = location.dx(1);
+			} while (spawner.isTestObjectAt(location));
+			var object = spawner.placeTestNpc(npc.id, npc.model, location, npc.plane, npc.orientation, npc.height, npc.animation);
+			if (object != null)
+				recreatedSceneObjects.add(object);
 		}
 	}
 
@@ -888,9 +916,21 @@ public class SceneTools {
 		int skippedNoModel;
 		int skippedFloorTiles;
 		int recreatedNpcs;
+		final List<PendingNpc> animatedNpcs = new ArrayList<>();
 		@Nullable
 		SceneCapture.Terrain terrain;
 		int capturedPlane;
+	}
+
+	@RequiredArgsConstructor
+	private static class PendingNpc {
+		final int id;
+		final Model model;
+		final LocalPoint location;
+		final int plane;
+		final int orientation;
+		final int height;
+		final int animation;
 	}
 
 	@RequiredArgsConstructor

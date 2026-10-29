@@ -105,6 +105,9 @@ public class SceneCapture {
 		public int height;
 		public int plane;
 		public int orientation;
+		// Played while recreated, or -1 for none. Missing from older captures.
+		@Nullable
+		public Integer idleAnimation;
 	}
 
 	/** A tile of ground, relative to the corner of the player's region, and planes relative to the player */
@@ -472,6 +475,7 @@ public class SceneCapture {
 			captured.height = Perspective.getTileHeight(client, location, plane) - groundHeight;
 			captured.plane = plane - originPlane;
 			captured.orientation = npc.getOrientation();
+			captured.idleAnimation = npc.getIdlePoseAnimation();
 			capture.npcs.add(captured);
 		}
 	}
