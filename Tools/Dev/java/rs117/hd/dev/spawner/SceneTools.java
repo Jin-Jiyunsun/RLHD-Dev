@@ -111,6 +111,11 @@ public class SceneTools {
 	private Environment overriddenEnvironment;
 	private Area overriddenEnvironmentArea;
 	private boolean overriddenEnvironmentInstant;
+	// How far the recreated scene is from where it was captured, which the environment's ground fog moves by, since it's
+	// drawn at fixed heights. Its own fog heights are kept to put back.
+	private int overrideFogShift;
+	private float overriddenFogStart;
+	private float overriddenFogEnd;
 	// Keeps switching instantly until 117 HD has switched away from it
 	@Nullable
 	private Environment leavingEnvironment;
@@ -350,12 +355,13 @@ public class SceneTools {
 			return;
 		}
 		removeRecreatedScene();
-		overrideEnvironmentName = capture.environment;
 
 		// Now, so moving while it spawns doesn't move the rest
 		LocalPoint origin = player.getLocalLocation();
 		int originPlane = worldView.getPlane();
 		int groundHeight = Perspective.getTileHeight(client, origin, originPlane);
+		overrideEnvironmentName = capture.environment;
+		overrideFogShift = capture.groundHeight == null ? 0 : groundHeight - capture.groundHeight;
 		var recreation = new SceneRecreation(capture.name == null ? "the scene capture" : capture.name);
 		recreation.terrain = capture.terrain;
 		recreation.capturedPlane = capture.capturedAt == null ? 0 : capture.capturedAt.getPlane();
@@ -777,6 +783,10 @@ public class SceneTools {
 					Integer.MIN_VALUE, Integer.MIN_VALUE, Integer.MAX_VALUE, Integer.MAX_VALUE
 				);
 				environment.instantTransition = true;
+				overriddenFogStart = environment.groundFogStart;
+				overriddenFogEnd = environment.groundFogEnd;
+				environment.groundFogStart += overrideFogShift;
+				environment.groundFogEnd += overrideFogShift;
 			}
 		}
 		// 117 HD picks the first containing the camera
@@ -790,6 +800,8 @@ public class SceneTools {
 		if (overriddenEnvironment == null)
 			return;
 		overriddenEnvironment.area = overriddenEnvironmentArea;
+		overriddenEnvironment.groundFogStart = overriddenFogStart;
+		overriddenEnvironment.groundFogEnd = overriddenFogEnd;
 		// 117 HD only switches away next frame
 		finishLeavingEnvironment();
 		leavingEnvironment = overriddenEnvironment;

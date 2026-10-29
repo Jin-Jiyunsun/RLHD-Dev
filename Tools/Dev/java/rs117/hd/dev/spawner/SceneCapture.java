@@ -79,6 +79,10 @@ public class SceneCapture {
 		public String name;
 		// Its plane turns the relative planes below back into the terrain's
 		public WorldPoint capturedAt;
+		// The height of the ground the player stood on, which every other height is relative to. Height-based effects like
+		// ground fog are moved by how much higher or lower the scene is recreated. Missing from older captures.
+		@Nullable
+		public Integer groundHeight;
 		// By key or area name
 		@Nullable
 		public String environment;
@@ -362,6 +366,7 @@ public class SceneCapture {
 		Capture capture = new Capture();
 		capture.name = name;
 		capture.capturedAt = player.getWorldLocation();
+		capture.groundHeight = groundHeight;
 		Scene scene = worldView.getScene();
 		Tile[][][] tiles = scene.getExtendedTiles();
 		int cornerX = getRegionCorner(scene.getBaseX(), origin.getX());
