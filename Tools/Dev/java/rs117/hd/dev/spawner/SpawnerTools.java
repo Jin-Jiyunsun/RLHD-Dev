@@ -65,6 +65,8 @@ public class SpawnerTools {
 	private static final int PREVIEW_SPOTANIM_SLOT = 1;
 	// Client cycles, long enough for the previous lights to be marked for removal
 	private static final int TEST_SPOTANIM_LOOP_DELAY = 50;
+	// Client cycles spawned objects' animations hold their last frame before looping, 2 seconds
+	private static final int TEST_OBJECT_LOOP_HOLD = 100;
 
 	@Inject
 	@Named("developerMode")
@@ -128,6 +130,10 @@ public class SpawnerTools {
 	private HdConfigIds sentHdConfigIds;
 	private int nextHdConfigCheckTick;
 	private int nextTestObjectHandle;
+	// Whether spawned objects' animations loop, after holding their last frame, or stay on it
+	private volatile boolean testObjectLoop;
+	// Spawned objects' height above the ground, in local units, or 0 to follow the ground
+	private volatile int testObjectHeightOffset;
 	private int testProjectileId = -1;
 	private boolean testProjectileLoop;
 	private boolean testProjectileIsPreview;
@@ -888,7 +894,46 @@ public class SpawnerTools {
 			location = location.dx(1);
 		} while (testObjectRenderer.isTestObjectAt(location.getX(), location.getY()));
 
-		return placeTestObject(objectId, def, model, location, worldView.getPlane(), 0, null);
+		int plane = worldView.getPlane();
+		int heightOffset = testObjectHeightOffset;
+		Integer height = heightOffset == 0 ? null : Perspective.getTileHeight(client, location, plane) - heightOffset;
+		RuneLiteObject object = placeTestObject(objectId, def, model, location, plane, 0, height);
+		if (object != null)
+			holdLastFrame(object);
+		return object;
+	}
+
+	/** Hold a spawned object's animation on its last frame, then loop it with fresh lights after a while if looping is on */
+	private void holdLastFrame(RuneLiteObject object) {
+		var controller = object.getAnimationController();
+		if (controller == null)
+			return;
+		int[] holdStart = { -1 };
+		// Called on the client thread each time the animation passes its last frame
+		controller.setOnFinished(c -> {
+			var animation = c.getAnimation();
+			int lastFrame = animation.isMayaAnim() ? animation.getDuration() - 1 : animation.getFrameLengths().length - 1;
+			int cycle = client.getGameCycle();
+			if (holdStart[0] == -1)
+				holdStart[0] = cycle;
+			if (testObjectLoop && cycle - holdStart[0] >= TEST_OBJECT_LOOP_HOLD) {
+				holdStart[0] = -1;
+				c.setFrame(0);
+				testObjectLights.restartLights(object);
+			} else {
+				c.setFrame(lastFrame);
+			}
+		});
+	}
+
+	/** Whether spawned objects' animations loop after holding their last frame, or stay on it. Any thread. */
+	public void setTestObjectLoop(boolean loop) {
+		testObjectLoop = loop;
+	}
+
+	/** Height above the ground for objects spawned from now on, in local units. Any thread. */
+	public void setTestObjectHeightOffset(int offset) {
+		testObjectHeightOffset = offset;
 	}
 
 	/**

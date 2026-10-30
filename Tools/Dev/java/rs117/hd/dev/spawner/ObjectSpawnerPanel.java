@@ -19,6 +19,8 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.geom.Arc2D;
+import java.awt.geom.Path2D;
 import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -87,6 +89,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final ImageIcon LIGHTS_FLAG_ICON = new ImageIcon(createLightbulbIcon(FLAG_ICON_SIZE));
 	private static final ImageIcon PAUSE_ICON = new ImageIcon(createPauseIcon());
 	private static final ImageIcon RESUME_ICON = new ImageIcon(createResumeIcon());
+	private static final ImageIcon STOP_ICON = new ImageIcon(createStopIcon());
+	private static final ImageIcon LOOP_ICON = new ImageIcon(createLoopIcon());
 	private static final int FILTER_ICON_SIZE = 16;
 	// Long names on the hovered row scroll, pausing at each end
 	private static final int MARQUEE_SPEED = 40;
@@ -95,7 +99,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 	private enum Mode {
 		OBJECTS("Objects", "spawn", "Clear spawned objects"),
-		SPOTANIMS("Spotanims", "play", "Stop spotanim"),
+		SPOTANIMS("Spotanims", "play", "Stop"),
 		PROJECTILES("Projectiles", "fire", "Stop projectile"),
 		SCENES("Scenes", "recreate", "Remove recreated scene");
 
@@ -130,11 +134,15 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JPanel distanceRow = new JPanel(new BorderLayout(6, 0));
 	private final JSpinner startHeightSpinner = new JSpinner(new SpinnerNumberModel(DEFAULT_PROJECTILE_START_HEIGHT, 0, 2000, 10));
 	private final JPanel startHeightRow = new JPanel(new BorderLayout(6, 0));
+	private final JSpinner objectHeightSpinner = new JSpinner(new SpinnerNumberModel(0, -2000, 2000, 10));
+	private final JPanel objectHeightRow = new JPanel(new BorderLayout(6, 0));
 	private final JTextField startFromField = new JTextField();
 	private final JButton clearButton = new JButton();
 	// Two rows of tabs, since four don't fit across the narrow sidebar
 	private final JPanel modeRow = new JPanel(new GridLayout(0, 2, 4, 4));
 	private final JPanel filterRow = new JPanel(new GridLayout(1, 2, 4, 0));
+	// Pause & stop side by side in the spotanims tab
+	private final JPanel spotanimButtonRow = new JPanel(new GridLayout(1, 2, 4, 0));
 	private final JPanel controls = new JPanel(new GridLayout(0, 1, 0, 4));
 	private final JTextArea statusText = createWrappingText();
 	private final JTextArea projectileDisclaimer = createWrappingText();
@@ -196,7 +204,9 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private Set<Integer> anySpotanimOverrides = Set.of();
 	private boolean definitionsChecked;
 	private boolean spotanimsLoaded;
+	// Spotanims & projectiles share one looping setting, while objects have their own, off by default
 	private boolean loop = true;
+	private boolean objectLoop;
 	private boolean frameTimings;
 
 	public ObjectSpawnerPanel(SpawnerTools spawner, SceneTools scenes, ObjectSelection selection) {
@@ -226,6 +236,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 		// One filter at a time, and clicking the active one turns it off
 		filterRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		spotanimButtonRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
 		styleButton(lightsFilterButton);
 		styleButton(overrideFilterButton);
 		lightsFilterButton.setToolTipText("Only show entries with lights in lights.json");
@@ -237,14 +248,21 @@ public class ObjectSpawnerPanel extends PluginPanel {
 
 		styleButton(loopButton);
 		loopButton.addActionListener(e -> {
-			loop = !loop;
-			updateLoopButton();
-			if (mode == Mode.SPOTANIMS) {
-				spawner.setSpotanimLoop(loop);
-			} else if (mode == Mode.PROJECTILES) {
-				spawner.setProjectileLoop(loop);
+			if (mode == Mode.OBJECTS) {
+				objectLoop = !objectLoop;
+				spawner.setTestObjectLoop(objectLoop);
+			} else {
+				loop = !loop;
+				if (mode == Mode.SPOTANIMS) {
+					spawner.setSpotanimLoop(loop);
+				} else if (mode == Mode.PROJECTILES) {
+					spawner.setProjectileLoop(loop);
+				}
 			}
+			updateLoopButton();
 		});
+		loopButton.setIcon(LOOP_ICON);
+		spawner.setTestObjectLoop(objectLoop);
 		updateLoopButton();
 
 		styleButton(pauseButton);
@@ -276,7 +294,15 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		startHeightSpinner.addChangeListener(e -> spawner.setProjectileStartHeight((Integer) startHeightSpinner.getValue()));
 		spawner.setProjectileStartHeight(DEFAULT_PROJECTILE_START_HEIGHT);
 
+		JLabel objectHeightLabel = createLabel("Height offset");
+		objectHeightLabel.setToolTipText("How far above the ground to spawn objects, where a tile is 128");
+		objectHeightRow.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		objectHeightRow.add(objectHeightLabel, BorderLayout.CENTER);
+		objectHeightRow.add(objectHeightSpinner, BorderLayout.EAST);
+		objectHeightSpinner.addChangeListener(e -> spawner.setTestObjectHeightOffset((Integer) objectHeightSpinner.getValue()));
+
 		distanceSpinner.setPreferredSize(startHeightSpinner.getPreferredSize());
+		objectHeightSpinner.setPreferredSize(startHeightSpinner.getPreferredSize());
 
 		styleButton(clearButton);
 		clearButton.addActionListener(e -> {
@@ -779,23 +805,29 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		for (Mode m : Mode.values())
 			setHighlighted(modeButtons[m.ordinal()], m == mode);
 		clearButton.setText(mode.clearLabel);
+		clearButton.setIcon(mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES ? STOP_ICON : null);
+		updateLoopButton();
 		listHeader.setText("All " + mode.label.toLowerCase(Locale.ROOT));
 
 		controls.removeAll();
 		controls.add(modeRow);
 		if (mode != Mode.SCENES)
 			controls.add(filterRow);
-		if (mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES)
+		if (mode != Mode.SCENES)
 			controls.add(loopButton);
-		if (mode == Mode.SPOTANIMS) {
-			controls.add(pauseButton);
+		if (mode == Mode.OBJECTS)
+			controls.add(objectHeightRow);
+		if (mode == Mode.SPOTANIMS)
 			controls.add(frameTimingsButton);
-		}
 		// The clear button goes in the section it clears, where there is one
 		if (mode == Mode.OBJECTS) {
 			spawnedSection.add(clearButton, BorderLayout.SOUTH);
 		} else if (mode == Mode.SCENES) {
 			recreatedSceneColumn.add(clearButton);
+		} else if (mode == Mode.SPOTANIMS) {
+			spotanimButtonRow.add(pauseButton);
+			spotanimButtonRow.add(clearButton);
+			controls.add(spotanimButtonRow);
 		} else {
 			controls.add(clearButton);
 		}
@@ -832,8 +864,9 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	}
 
 	private void updateLoopButton() {
-		loopButton.setText(loop ? "Looping: on" : "Looping: off");
-		setHighlighted(loopButton, loop);
+		boolean on = mode == Mode.OBJECTS ? objectLoop : loop;
+		loopButton.setText(on ? "Looping: on" : "Looping: off");
+		setHighlighted(loopButton, on);
 	}
 
 	private void updatePauseButton(boolean paused) {
@@ -1252,9 +1285,48 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static BufferedImage createPauseIcon() {
 		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
-		g.setColor(ColorScheme.PROGRESS_ERROR_COLOR);
+		g.setColor(ColorScheme.BRAND_ORANGE);
 		g.fillRect(2, 1, 3, 10);
 		g.fillRect(7, 1, 3, 10);
+		g.dispose();
+		return image;
+	}
+
+	/** Two arrows chasing each other around a circle */
+	private static BufferedImage createLoopIcon() {
+		int size = 16;
+		BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = image.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+		g.setColor(new Color(255, 210, 60));
+		g.setStroke(new BasicStroke(1.75f));
+		float center = size / 2f, radius = 4.5f;
+		for (int start : new int[] { 30, 210 }) {
+			// Each arc runs anticlockwise, leaving room for the arrowhead at its end
+			int extent = 115;
+			g.draw(new Arc2D.Float(center - radius, center - radius, radius * 2, radius * 2, start, extent, Arc2D.OPEN));
+			double end = Math.toRadians(start + extent);
+			float x = (float) (center + radius * Math.cos(end));
+			float y = (float) (center - radius * Math.sin(end));
+			// Heading anticlockwise, in screen coordinates
+			float dx = (float) -Math.sin(end), dy = (float) -Math.cos(end);
+			Path2D.Float head = new Path2D.Float();
+			head.moveTo(x + dx * 3f, y + dy * 3f);
+			head.lineTo(x - dy * 2.75f, y + dx * 2.75f);
+			head.lineTo(x + dy * 2.75f, y - dx * 2.75f);
+			head.closePath();
+			g.fill(head);
+		}
+		g.dispose();
+		return image;
+	}
+
+	private static BufferedImage createStopIcon() {
+		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = image.createGraphics();
+		g.setColor(ColorScheme.PROGRESS_ERROR_COLOR);
+		g.fillRect(1, 1, 10, 10);
 		g.dispose();
 		return image;
 	}

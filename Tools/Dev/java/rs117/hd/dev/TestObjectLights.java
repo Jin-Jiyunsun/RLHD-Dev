@@ -155,6 +155,13 @@ public class TestObjectLights {
 		}
 	}
 
+	/** Start a test object's lights over, like a fresh spawn, by dropping them to be added again on the next tick */
+	public void restartLights(RuneLiteObject object) {
+		assert client.isClientThread();
+		hdInternals.getLights().removeIf(light -> testObjectLights.get(light) == object);
+		testObjectLights.values().removeIf(lit -> lit == object);
+	}
+
 	private void removeAll() {
 		if (client.isClientThread())
 			hdInternals.getLights().removeIf(light -> testObjectLights.containsKey(light) || staticObjectLights.containsKey(light));
