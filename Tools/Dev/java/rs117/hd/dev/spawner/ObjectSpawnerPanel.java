@@ -85,6 +85,8 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private static final Color OVERRIDE_FLAG_COLOR = new Color(0x4CC94C);
 	private static final ImageIcon OVERRIDE_FLAG_ICON = new ImageIcon(createCubeIcon(FLAG_ICON_SIZE, OVERRIDE_FLAG_COLOR));
 	private static final ImageIcon LIGHTS_FLAG_ICON = new ImageIcon(createLightbulbIcon(FLAG_ICON_SIZE));
+	private static final ImageIcon PAUSE_ICON = new ImageIcon(createPauseIcon());
+	private static final ImageIcon RESUME_ICON = new ImageIcon(createResumeIcon());
 	private static final int FILTER_ICON_SIZE = 16;
 	// Long names on the hovered row scroll, pausing at each end
 	private static final int MARQUEE_SPEED = 40;
@@ -123,6 +125,7 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private final JToggleButton overrideFilterButton = new JToggleButton(new ImageIcon(createCubeIcon(FILTER_ICON_SIZE, OVERRIDE_FLAG_COLOR)));
 	private final JButton loopButton = new JButton();
 	private final JButton frameTimingsButton = new JButton();
+	private final JButton pauseButton = new JButton();
 	private final JSpinner distanceSpinner = new JSpinner(new SpinnerNumberModel(DEFAULT_PROJECTILE_DISTANCE, 1, 30, 1));
 	private final JPanel distanceRow = new JPanel(new BorderLayout(6, 0));
 	private final JSpinner startHeightSpinner = new JSpinner(new SpinnerNumberModel(DEFAULT_PROJECTILE_START_HEIGHT, 0, 2000, 10));
@@ -243,6 +246,12 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			}
 		});
 		updateLoopButton();
+
+		styleButton(pauseButton);
+		pauseButton.setToolTipText("Pause the playing spotanim on its current frame, lights included, or resume it");
+		pauseButton.addActionListener(e -> spawner.toggleSpotanimPause());
+		spawner.setSpotanimPausedListener(this::updatePauseButton);
+		updatePauseButton(false);
 
 		styleButton(frameTimingsButton);
 		frameTimingsButton.setToolTipText("Post a summary of each spotanim's frame timings in the chat after it first plays");
@@ -778,8 +787,10 @@ public class ObjectSpawnerPanel extends PluginPanel {
 			controls.add(filterRow);
 		if (mode == Mode.SPOTANIMS || mode == Mode.PROJECTILES)
 			controls.add(loopButton);
-		if (mode == Mode.SPOTANIMS)
+		if (mode == Mode.SPOTANIMS) {
+			controls.add(pauseButton);
 			controls.add(frameTimingsButton);
+		}
 		// The clear button goes in the section it clears, where there is one
 		if (mode == Mode.OBJECTS) {
 			spawnedSection.add(clearButton, BorderLayout.SOUTH);
@@ -823,6 +834,11 @@ public class ObjectSpawnerPanel extends PluginPanel {
 	private void updateLoopButton() {
 		loopButton.setText(loop ? "Looping: on" : "Looping: off");
 		setHighlighted(loopButton, loop);
+	}
+
+	private void updatePauseButton(boolean paused) {
+		pauseButton.setText(paused ? "Resume" : "Pause");
+		pauseButton.setIcon(paused ? RESUME_ICON : PAUSE_ICON);
 	}
 
 	private void updateFrameTimingsButton() {
@@ -1229,6 +1245,26 @@ public class ObjectSpawnerPanel extends PluginPanel {
 		g.drawPolygon(new int[] { 2, 10, 9, 3 }, new int[] { 4, 4, 11, 11 }, 4);
 		g.drawLine(5, 6, 5, 9);
 		g.drawLine(7, 6, 7, 9);
+		g.dispose();
+		return image;
+	}
+
+	private static BufferedImage createPauseIcon() {
+		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = image.createGraphics();
+		g.setColor(ColorScheme.PROGRESS_ERROR_COLOR);
+		g.fillRect(2, 1, 3, 10);
+		g.fillRect(7, 1, 3, 10);
+		g.dispose();
+		return image;
+	}
+
+	private static BufferedImage createResumeIcon() {
+		BufferedImage image = new BufferedImage(12, 12, BufferedImage.TYPE_INT_ARGB);
+		Graphics2D g = image.createGraphics();
+		g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+		g.setColor(ColorScheme.PROGRESS_COMPLETE_COLOR);
+		g.fillPolygon(new int[] { 2, 11, 2 }, new int[] { 1, 6, 11 }, 3);
 		g.dispose();
 		return image;
 	}

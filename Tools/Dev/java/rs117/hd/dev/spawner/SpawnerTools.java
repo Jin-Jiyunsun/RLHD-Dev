@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +35,7 @@ import rs117.hd.dev.TestObjectLights;
 import rs117.hd.dev.TestObjectRenderer;
 import rs117.hd.scene.GamevalManager;
 import rs117.hd.scene.LightManager;
+import rs117.hd.scene.lights.Light;
 import rs117.hd.utils.ModelHash;
 
 import static rs117.hd.utils.MathUtils.*;
@@ -113,6 +115,9 @@ public class SpawnerTools {
 	private final TestSpotanim testSpotanim = new TestSpotanim(TEST_SPOTANIM_SLOT);
 	private final TestSpotanim previewSpotanim = new TestSpotanim(PREVIEW_SPOTANIM_SLOT);
 	private volatile boolean postSpotanimFrameTimings;
+	// Told whether the clicked spotanim is paused, on the Swing thread
+	@Nullable
+	private volatile Consumer<Boolean> spotanimPausedListener;
 	private final AtomicInteger testSpotanimPreviewRequest = new AtomicInteger();
 
 	private NavigationButton objectSpawnerButton;
@@ -234,6 +239,11 @@ public class SpawnerTools {
 		}
 	}
 
+	@Subscribe
+	public void onBeforeRender(BeforeRender beforeRender) {
+		testSpotanim.holdLights();
+	}
+
 	/** A spotanim played on the local player in a slot of its own, played again after a pause while it loops */
 	private class TestSpotanim {
 		final int slot;
@@ -244,6 +254,11 @@ public class SpawnerTools {
 		@Nullable
 		List<int[]> frameTimes;
 		int lastFrame;
+		// While paused, the client is held on this frame, and the spotanim's lights on their elapsed times
+		boolean paused;
+		int pausedFrame;
+		int pausedCycle;
+		final Map<Light, Float> heldLightTimes = new IdentityHashMap<>();
 
 		TestSpotanim(int slot) {
 			this.slot = slot;
@@ -296,7 +311,46 @@ public class SpawnerTools {
 			loop = false;
 			restartCycle = -1;
 			frameTimes = null;
+			setPausedState(false);
 			updatePreviewLights();
+		}
+
+		/** Pause or resume playback, returning false if it's between loops with nothing to pause */
+		boolean setPaused(boolean pause) {
+			if (id == -1 || pause == paused)
+				return true;
+			if (pause) {
+				Player player = client.getLocalPlayer();
+				ActorSpotAnim spotanim = player == null ? null : player.getSpotAnims().get(slot);
+				if (spotanim == null || spotanim.getId() != id)
+					return false;
+				pausedFrame = spotanim.getFrame();
+				pausedCycle = spotanim.getCycle();
+				// Timings would be meaningless once playback is held
+				frameTimes = null;
+				for (Light light : hdInternals.getLights())
+					if (light.actor == player && light.spotanimId == id)
+						heldLightTimes.put(light, light.elapsedTime);
+			}
+			setPausedState(pause);
+			return true;
+		}
+
+		private void setPausedState(boolean pause) {
+			if (!pause)
+				heldLightTimes.clear();
+			if (paused == pause)
+				return;
+			paused = pause;
+			var listener = spotanimPausedListener;
+			if (listener != null && slot == TEST_SPOTANIM_SLOT)
+				SwingUtilities.invokeLater(() -> listener.accept(pause));
+		}
+
+		/** Undo the time 117 HD's lights have counted since the last frame, just before it updates them again */
+		void holdLights() {
+			for (var entry : heldLightTimes.entrySet())
+				entry.getKey().elapsedTime = entry.getValue();
 		}
 
 		void update(Player player) {
@@ -304,6 +358,15 @@ public class SpawnerTools {
 				return;
 
 			ActorSpotAnim spotanim = player.getSpotAnims().get(slot);
+			if (paused) {
+				// Hold it on its frame, so the client never advances or finishes it, unless something else replaced it
+				if (spotanim != null && spotanim.getId() == id) {
+					spotanim.setFrame(pausedFrame);
+					spotanim.setCycle(pausedCycle);
+					return;
+				}
+				setPausedState(false);
+			}
 			if (spotanim != null && spotanim.getId() == id) {
 				restartCycle = -1;
 				int elapsedCycles = client.getGameCycle() - spotanim.getStartCycle();
@@ -374,6 +437,21 @@ public class SpawnerTools {
 			if (testSpotanim.id != -1)
 				testSpotanim.loop = loop;
 		});
+	}
+
+	/** Pause the clicked spotanim on its current frame, lights included, or resume it. Any thread. */
+	public void toggleSpotanimPause() {
+		clientThread.invoke(() -> {
+			if (testSpotanim.id == -1) {
+				postMessage("No test spotanim is playing");
+			} else if (!testSpotanim.setPaused(!testSpotanim.paused)) {
+				postMessage("The spotanim is between loops, so there's nothing to pause yet");
+			}
+		});
+	}
+
+	public void setSpotanimPausedListener(@Nullable Consumer<Boolean> listener) {
+		spotanimPausedListener = listener;
 	}
 
 	/** Preview a spotanim looping on the local player, alongside any clicked spotanim. Any thread. */
